@@ -11,11 +11,13 @@ st.set_page_config(page_title="Panel de Producción", layout="wide")
 st.title("📊 Análisis de Producción y Rendimiento Ejecutivo")
 
 # ==========================================
-# 1. CONFIGURACIÓN DE FUENTE DE DATOS FIJA
+# 1. CONFIGURACIÓN DE FUENTE DE DATOS
 # ==========================================
-# URL de tu Google Sheet específica (Exportada como CSV)
+# Extraemos el ID y GID de tu enlace: 
+# https://docs.google.com/spreadsheets/d/1TdQ3yNxx29SgQ7u8oexxlnL80rAcXQuP118wQVBd9ew/edit?gid=315437448#gid=315437448
+# Y lo convertimos en un enlace de exportación CSV para que Pandas pueda leerlo.
 SHEET_ID = "1TdQ3yNxx29SgQ7u8oexxlnL80rAcXQuP118wQVBd9ew"
-GID = "315437448"  # El ID de la pestaña 'PRODUCCION'
+GID = "315437448"
 url_csv = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
 @st.cache_data(ttl=600)  # Cache por 10 minutos para no saturar la red
@@ -23,7 +25,7 @@ def cargar_datos(url):
     return pd.read_csv(url)
 
 try:
-    st.info("Obteniendo datos desde Google Sheets...")
+    st.info("Obteniendo datos de producción desde Google Sheets...")
     df_raw = cargar_datos(url_csv)
     
     # Pre-procesamiento de fechas para el filtro
@@ -31,14 +33,14 @@ try:
     df_raw = df_raw.dropna(subset=['Fecha'])
 
     # ==========================================
-    # 2. FILTRO POR RANGO DE TIEMPO (Sidebar)
+    # 2. FILTRO POR RANGO DE TIEMPO (Debajo del título)
     # ==========================================
-    st.sidebar.header("Filtros de Tiempo")
     fecha_min = df_raw['Fecha'].min().date()
     fecha_max = df_raw['Fecha'].max().date()
     
-    rango_fechas = st.sidebar.date_input(
-        "Selecciona el rango de fechas:",
+    # Colocado en la vista principal, sin usar "sidebar"
+    rango_fechas = st.date_input(
+        "📅 Selecciona el rango de fechas:",
         value=(fecha_min, fecha_max),
         min_value=fecha_min,
         max_value=fecha_max
@@ -50,11 +52,14 @@ try:
         mask = (df_raw['Fecha'].dt.date >= inicio) & (df_raw['Fecha'].dt.date <= fin)
         df = df_raw.loc[mask].copy()
     else:
-        st.warning("Por favor, selecciona un rango de fechas (Inicio y Fin).")
+        st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
         st.stop()
 
+    st.success(f"Analizando datos desde el {inicio} hasta el {fin}")
+    st.divider() # Añade una línea separadora visual
+
     # ==========================================
-    # 3. LIMPIEZA Y CÁLCULOS (Tu lógica original corregida)
+    # 3. LIMPIEZA Y CÁLCULOS
     # ==========================================
     df = df.dropna(how='all')
     df['Máquina'] = df['Máquina'].astype(str).str.strip()
@@ -72,7 +77,7 @@ try:
     df['Total_Piezas_Fabricadas'] = df['Buenas'] + df['Retrabajo'] + df['Observadas']
     df['Horas_Decimal'] = df['Tiempo Producción (Min)'] / 60
 
-    # Lógica de agrupamiento (Igual a la original)
+    # Lógica de agrupamiento
     def calcular_sub_bloque(g):
         if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
         total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
@@ -87,13 +92,8 @@ try:
     despliegue_hora['Ciclos_Hora_Bloque'] = np.where(despliegue_hora['Total_Horas'] > 0, despliegue_hora['Ciclos_Maquina'] / despliegue_hora['Total_Horas'], 0)
 
     # --- El resto de tu código de visualización (Tabs, Matplotlib, FPDF) sigue igual ---
-    # (Pestañas tab1, tab2, tab3, tab4 y generación de PDF...)
+    # [AQUÍ VA EL RESTO DE TUS PESTAÑAS Y GRÁFICOS]
     
-    st.success(f"Analizando datos desde el {inicio} hasta el {fin}")
-    
-    # [Aquí insertas el resto de las pestañas y la lógica del PDF que ya tenías]
-    # ... (Omitido por brevedad, pero se mantiene igual)
-
 except Exception as e:
     st.error(f"Error de procesamiento: {e}")
     st.info("Asegúrate de que el Google Sheet sea público o compartido con 'Cualquier persona con el enlace'.")
