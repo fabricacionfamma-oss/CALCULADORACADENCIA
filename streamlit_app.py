@@ -54,12 +54,17 @@ try:
         st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
         st.stop()
 
-    # Limpiamos columna de máquina para el selector
+    # --- LIMPIEZA Y UNIFICACIÓN DE MÁQUINAS ---
     df_filtrado_fecha = df_filtrado_fecha.dropna(how='all')
     df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina'].astype(str).str.strip()
     df_filtrado_fecha = df_filtrado_fecha[~df_filtrado_fecha['Máquina'].str.lower().isin(['nan', 'none', '', 'null'])]
 
-    # Opciones de máquina (Selector múltiple)
+    # UNIFICAR CELDA 15A y 15B como una sola: "Cell 15 Famma"
+    df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina'].apply(
+        lambda x: 'Cell 15 Famma' if 'Cell 15A' in x or 'Cell 15B' in x else x
+    )
+
+    # Opciones de máquina (Selector múltiple) - Ahora mostrará Cell 15 Famma unificada
     lista_maquinas = sorted(df_filtrado_fecha['Máquina'].unique().tolist())
     
     maquinas_seleccionadas = st.multiselect(
@@ -79,7 +84,7 @@ try:
     st.divider()
 
     # ==========================================
-    # 3. LIMPIEZA Y CÁLCULOS BASE (Ocultos)
+    # 3. CÁLCULOS BASE (Ocultos)
     # ==========================================
     with st.spinner("Procesando datos y calculando métricas..."):
         columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo', 'Hora']
@@ -98,6 +103,7 @@ try:
             if g.empty: return pd.Series({'Total_Piezas': 0.0, 'Total_Horas': 0.0, 'Cantidad_Productos': 0, 'Ciclos_Maquina': 0.0})
             total_piezas = float(g['Total_Piezas_Fabricadas'].sum())
             cantidad_productos = int(g['Código Producto'].nunique())
+            # Al estar unificadas 15A y 15B, toman el tiempo productivo registrado en esa hora
             total_horas = float(g['Horas_Decimal'].iloc[0]) if not g.empty else 0.0
             ciclos_maquina = total_piezas / cantidad_productos if cantidad_productos > 0 else 0.0
             return pd.Series([total_piezas, total_horas, cantidad_productos, ciclos_maquina], 
@@ -198,7 +204,6 @@ try:
 
         # ---- SECCIÓN 3: Histórico Diario ----
         for m_id in maquinas_seleccionadas:
-            # Solo generamos hoja si hay datos para esa máquina
             dat_pdf = prom_h[prom_h['Máquina'] == m_id]
             if dat_pdf.empty: continue
 
@@ -236,9 +241,17 @@ try:
                 os.remove(t_name)
 
         # ==========================================
-        # DESCARGA DEL ARCHIVO
+        # DESCARGA DEL ARCHIVO (CON FECHAS DINÁMICAS)
         # ==========================================
-        nombre_archivo = "Reporte_Produccion_Multi.pdf" if len(maquinas_seleccionadas) > 1 else f"Reporte_{maquinas_seleccionadas[0].replace(' ', '_')}.pdf"
+        # Formateamos las fechas de YYYY-MM-DD a un string limpio
+        fecha_str = f"{inicio.strftime('%d%m%y')}_al_{fin.strftime('%d%m%y')}"
+        
+        if len(maquinas_seleccionadas) > 1:
+            nombre_archivo = f"Reporte_Produccion_Multi_{fecha_str}.pdf"
+        else:
+            nombre_limpio = maquinas_seleccionadas[0].replace(' ', '_')
+            nombre_archivo = f"Reporte_Produccion_{nombre_limpio}_{fecha_str}.pdf"
+            
         pdf.output(nombre_archivo)
 
     # Botón gigante y claro para la descarga final
