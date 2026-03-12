@@ -32,36 +32,56 @@ try:
     df_raw = df_raw.dropna(subset=['Fecha'])
 
     # ==========================================
-    # 2. FILTRO POR RANGO DE TIEMPO
+    # 2. FILTROS (FECHA Y MÁQUINA)
     # ==========================================
+    col1, col2 = st.columns(2)
+    
     fecha_min = df_raw['Fecha'].min().date()
     fecha_max = df_raw['Fecha'].max().date()
     
-    rango_fechas = st.date_input(
-        "📅 Selecciona el rango de fechas:",
-        value=(fecha_min, fecha_max),
-        min_value=fecha_min,
-        max_value=fecha_max
-    )
+    with col1:
+        rango_fechas = st.date_input(
+            "📅 1. Selecciona el rango de fechas:",
+            value=(fecha_min, fecha_max),
+            min_value=fecha_min,
+            max_value=fecha_max
+        )
 
     if len(rango_fechas) == 2:
         inicio, fin = rango_fechas
         mask = (df_raw['Fecha'].dt.date >= inicio) & (df_raw['Fecha'].dt.date <= fin)
-        df = df_raw.loc[mask].copy()
+        df_filtrado_fecha = df_raw.loc[mask].copy()
     else:
         st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
         st.stop()
 
-    st.success(f"Analizando datos desde el {inicio} hasta el {fin}")
+    # Limpiamos columna de máquina para el selector
+    df_filtrado_fecha = df_filtrado_fecha.dropna(how='all')
+    df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina'].astype(str).str.strip()
+    df_filtrado_fecha = df_filtrado_fecha[~df_filtrado_fecha['Máquina'].str.lower().isin(['nan', 'none', '', 'null'])]
+
+    # Opciones de máquina basadas en las fechas seleccionadas
+    lista_maquinas = ["Todas"] + sorted(df_filtrado_fecha['Máquina'].unique().tolist())
+    
+    with col2:
+        maquina_seleccionada = st.selectbox("⚙️ 2. Selecciona la Máquina a analizar:", lista_maquinas)
+
+    # Aplicar el filtro de máquina si no es "Todas"
+    if maquina_seleccionada != "Todas":
+        df = df_filtrado_fecha[df_filtrado_fecha['Máquina'] == maquina_seleccionada].copy()
+    else:
+        df = df_filtrado_fecha.copy()
+
+    if df.empty:
+        st.warning("No hay datos para esta combinación de Fecha y Máquina.")
+        st.stop()
+
+    st.success(f"Analizando datos del {inicio} al {fin} para: **{maquina_seleccionada}**")
     st.divider()
 
     # ==========================================
     # 3. LIMPIEZA Y CÁLCULOS BASE
     # ==========================================
-    df = df.dropna(how='all')
-    df['Máquina'] = df['Máquina'].astype(str).str.strip()
-    df = df[~df['Máquina'].str.lower().isin(['nan', 'none', '', 'null'])]
-
     columnas_num = ['Buenas', 'Retrabajo', 'Observadas', 'Tiempo Producción (Min)', 'Tiempo Ciclo', 'Hora']
     for col in columnas_num:
         if col in df.columns:
@@ -108,20 +128,20 @@ try:
     comp_prod['Diferencia'] = comp_prod['Real_Pzs_Hora'] - comp_prod['Estimado_Pzs_Hora']
     comp_prod = comp_prod[['Máquina', 'Código Producto', 'Real_Pzs_Hora', 'Estimado_Pzs_Hora', 'Diferencia']].round(2)
 
-    # Preparativos para Gráficos
+    # Preparativos para Histórico Diario (Cuadro 3)
     prom_h = despliegue_hora.groupby(['Máquina', 'Hora_Real', 'Orden_Hora']).agg(P=('Pzs_Hora_Bloque', 'mean')).reset_index().sort_values('Orden_Hora')
 
     # ==========================================
-    # 4. INTERFAZ Y PESTAÑAS
+    # 4. INTERFAZ DE STREAMLIT (TABS)
     # ==========================================
     tab1, tab2, tab3, tab4 = st.tabs(["📈 General", "🎯 Real vs Estimado", "⏰ Histórico", "📅 Bitácora"])
 
     with tab1:
-        st.subheader("Rendimiento Real por Máquina")
-        st.dataframe(resumen_general, use_container_width=True)
+        st.subheader("1. Rendimiento General (Por N. de Productos)")
+        st.dataframe(resumen_general[['Máquina', 'Cantidad_Productos', 'Promedio_Pzs_Hora']], use_container_width=True)
 
     with tab2:
-        st.subheader("Análisis de Desviación Real vs Estimado")
+        st.subheader("2. Rendimiento por Producto (Real vs Estimado)")
         def color_diff(val):
             return 'color: green' if val > 0 else 'color: red' if val < 0 else ''
         
@@ -129,25 +149,13 @@ try:
             comp_prod.style.map(color_diff, subset=['Diferencia']).format("{:.2f}", subset=['Real_Pzs_Hora', 'Estimado_Pzs_Hora', 'Diferencia']),
             use_container_width=True
         )
-        
-        # Generamos el gráfico y lo guardamos (necesario para el PDF)
-        fig_p, ax_p = plt.subplots(figsize=(12, 5))
-        datos_g = comp_prod.head(15)
-        x = np.arange(len(datos_g))
-        ax_p.bar(x - 0.2, datos_g['Real_Pzs_Hora'], 0.4, label='Real', color='#1f77b4')
-        ax_p.bar(x + 0.2, datos_g['Estimado_Pzs_Hora'], 0.4, label='Estimado', color='#aec7e8')
-        ax_p.set_xticks(x)
-        ax_p.set_xticklabels(datos_g['Código Producto'], rotation=45, ha='right')
-        ax_p.legend()
-        fig_p.savefig("temp_prod.png", bbox_inches='tight')
-        st.pyplot(fig_p)
-        plt.close(fig_p)
 
     with tab3:
-        st.subheader("Promedio de Producción por Hora del Día")
-        sel_m = st.selectbox("Selecciona la Máquina a analizar:", prom_h['Máquina'].unique())
-        dat_m = prom_h[prom_h['Máquina'] == sel_m]
-        st.line_chart(dat_m.set_index('Hora_Real')['P'])
+        st.subheader("3. Rendimiento Histórico Diario")
+        for m in prom_h['Máquina'].unique():
+            st.markdown(f"**Máquina: {m}**")
+            dat_m = prom_h[prom_h['Máquina'] == m]
+            st.line_chart(dat_m.set_index('Hora_Real')['P'])
 
     with tab4:
         st.subheader("Bitácora Diaria (Datos procesados)")
@@ -165,92 +173,114 @@ try:
     pdf.set_text_color(*AZUL_TITULO)
     pdf.cell(190, 10, "REPORTE DE PRODUCCION EJECUTIVO", 0, 1, 'C')
     
-    # Añadimos las fechas al PDF para dar más contexto
-    pdf.set_font("Arial", "I", 12)
-    pdf.cell(190, 10, f"Periodo: {inicio} al {fin}", 0, 1, 'C')
+    pdf.set_font("Arial", "I", 11)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(190, 8, f"Periodo: {inicio} al {fin} | Maquina(s): {maquina_seleccionada}", 0, 1, 'C')
     pdf.ln(5)
 
+    # ---- SECCIÓN 1: Rendimiento General ----
     pdf.set_font("Arial", "B", 12)
-    pdf.cell(190, 10, "1. Rendimiento por Producto", 0, 1)
+    pdf.set_text_color(0, 0, 0)
+    pdf.cell(190, 10, "1. Rendimiento General (Por N. de Productos)", 0, 1)
+    
     pdf.set_font("Arial", "B", 10)
     pdf.set_fill_color(*AZUL_FONDO)
-    pdf.set_text_color(0,0,0)
-    pdf.cell(40, 8, "Maquina", 1, 0, 'C', True)
-    pdf.cell(60, 8, "Producto", 1, 0, 'C', True)
-    pdf.cell(30, 8, "Real", 1, 0, 'C', True)
-    pdf.cell(30, 8, "Estimado", 1, 0, 'C', True)
-    pdf.cell(30, 8, "Diferencia", 1, 1, 'C', True)
+    pdf.cell(80, 8, "Maquina", 1, 0, 'C', True)
+    pdf.cell(50, 8, "N. Productos", 1, 0, 'C', True)
+    pdf.cell(60, 8, "Promedio (Pzs/h)", 1, 1, 'C', True)
+    
+    pdf.set_font("Arial", "", 9)
+    for _, r in resumen_general.iterrows():
+        pdf.cell(80, 7, str(r['Máquina'])[:35], 1)
+        pdf.cell(50, 7, str(int(r['Cantidad_Productos'])), 1, 0, 'C')
+        pdf.cell(60, 7, f"{r['Promedio_Pzs_Hora']:.2f}", 1, 1, 'C')
+    pdf.ln(5)
+
+    # ---- SECCIÓN 2: Real vs Estimado ----
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(190, 10, "2. Rendimiento por Producto (Real vs Estimado)", 0, 1)
+    
+    pdf.set_font("Arial", "B", 9)
+    pdf.set_fill_color(*AZUL_FONDO)
+    pdf.cell(50, 8, "Maquina", 1, 0, 'C', True)
+    pdf.cell(65, 8, "Codigo Producto", 1, 0, 'C', True)
+    pdf.cell(25, 8, "Real", 1, 0, 'C', True)
+    pdf.cell(25, 8, "Estimado", 1, 0, 'C', True)
+    pdf.cell(25, 8, "Diferencia", 1, 1, 'C', True)
     
     pdf.set_font("Arial", "", 9)
     for _, r in comp_prod.iterrows():
-        pdf.cell(40, 7, str(r['Máquina'])[:15], 1)
-        pdf.cell(60, 7, str(r['Código Producto'])[:25], 1)
-        pdf.cell(30, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
-        pdf.cell(30, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 0, 'C')
+        pdf.cell(50, 7, str(r['Máquina'])[:25], 1)
+        pdf.cell(65, 7, str(r['Código Producto'])[:30], 1)
+        pdf.cell(25, 7, f"{r['Real_Pzs_Hora']:.2f}", 1, 0, 'C')
+        pdf.cell(25, 7, f"{r['Estimado_Pzs_Hora']:.2f}", 1, 0, 'C')
         
+        # Color en Diferencia
         if r['Diferencia'] > 0:
-            pdf.set_text_color(0, 150, 0)
+            pdf.set_text_color(0, 150, 0) # Verde
+            diff_text = f"+{r['Diferencia']:.2f}"
         else:
-            pdf.set_text_color(200, 0, 0)
+            pdf.set_text_color(200, 0, 0) # Rojo
+            diff_text = f"{r['Diferencia']:.2f}"
             
-        pdf.cell(30, 7, f"{r['Diferencia']:.2f}", 1, 1, 'C')
-        pdf.set_text_color(0,0,0)
+        pdf.cell(25, 7, diff_text, 1, 1, 'C')
+        pdf.set_text_color(0,0,0) # Reset color
+    pdf.ln(5)
 
-    # Insertamos el gráfico general
-    if os.path.exists("temp_prod.png"):
-        pdf.image("temp_prod.png", x=10, y=pdf.get_y()+10, w=180)
-
-    # Hojas por cada máquina
+    # ---- SECCIÓN 3: Histórico Diario ----
     for m_id in prom_h['Máquina'].unique():
         pdf.add_page()
-        pdf.set_font("Arial", "B", 14)
-        pdf.set_text_color(*AZUL_TITULO)
-        pdf.cell(190, 10, f"Rendimiento Diario: {m_id}", 0, 1)
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(190, 10, f"3. Rendimiento Historico Diario: {m_id}", 0, 1)
         
         dat_pdf = prom_h[prom_h['Máquina'] == m_id]
+        
+        # Tabla del histórico
         pdf.set_font("Arial", "B", 10)
         pdf.set_fill_color(*AZUL_FONDO)
-        pdf.set_text_color(0,0,0)
-        pdf.cell(90, 8, "Hora", 1, 0, 'C', True)
-        pdf.cell(100, 8, "Promedio Pzs/h", 1, 1, 'C', True)
+        pdf.cell(70, 8, "Maquina", 1, 0, 'C', True)
+        pdf.cell(50, 8, "Hora", 1, 0, 'C', True)
+        pdf.cell(70, 8, "Promedio (Pzs/h)", 1, 1, 'C', True)
         
-        pdf.set_font("Arial", "", 10)
+        pdf.set_font("Arial", "", 9)
         for _, r in dat_pdf.iterrows():
-            pdf.cell(90, 7, f"{r['Hora_Real']}:00", 1, 0, 'C')
-            pdf.cell(100, 7, f"{r['P']:.2f}", 1, 1, 'C')
+            pdf.cell(70, 7, str(r['Máquina'])[:30], 1, 0, 'C')
+            pdf.cell(50, 7, f"{r['Hora_Real']}:00", 1, 0, 'C')
+            pdf.cell(70, 7, f"{r['P']:.2f}", 1, 1, 'C')
         
-        # Generar gráfico temporal para la máquina
-        fig_t, ax_t = plt.subplots(figsize=(10, 4))
-        ax_t.plot(dat_pdf['Hora_Real'].astype(str), dat_pdf['P'], marker='o', color='#00509E')
+        # Gráfico temporal
+        fig_t, ax_t = plt.subplots(figsize=(10, 3.5))
+        ax_t.plot(dat_pdf['Hora_Real'].astype(str) + ":00", dat_pdf['P'], marker='o', color='#00509E')
+        ax_t.set_title(f"Tendencia - {m_id}")
+        ax_t.set_ylabel("Promedio (Pzs/h)")
+        ax_t.grid(True, linestyle='--', alpha=0.6)
+        
         t_name = f"t_{m_id}.png".replace(" ","").replace("/","")
-        fig_t.savefig(t_name)
+        fig_t.savefig(t_name, bbox_inches='tight')
         plt.close(fig_t)
         
-        pdf.image(t_name, x=15, y=pdf.get_y()+10, w=170)
+        pdf.ln(5)
+        pdf.image(t_name, x=15, w=180)
         if os.path.exists(t_name):
             os.remove(t_name)
 
-    # Generación y Botón de Descarga
-    nombre_final = f"Reporte_Produccion_{inicio}_al_{fin}.pdf"
+    # ==========================================
+    # DESCARGA DEL ARCHIVO
+    # ==========================================
+    st.markdown("---")
+    nombre_final = f"Reporte_Produccion_{maquina_seleccionada.replace(' ', '_')}_{inicio}.pdf"
     pdf.output(nombre_final)
 
-    st.markdown("---")
     with open(nombre_final, "rb") as f:
         st.download_button(
-            label="📥 Descargar Reporte Completo (PDF)", 
+            label="📥 Descargar Reporte Ejecutivo (PDF)", 
             data=f, 
             file_name=nombre_final,
             mime="application/pdf"
         )
 
-    # Limpieza de archivos temporales
-    if os.path.exists("temp_prod.png"):
-        os.remove("temp_prod.png")
     if os.path.exists(nombre_final):
         os.remove(nombre_final)
-
-    with st.expander("Ver datos originales (Fuente)"):
-        st.dataframe(df, use_container_width=True)
 
 except Exception as e:
     st.error(f"Error de procesamiento: {e}")
