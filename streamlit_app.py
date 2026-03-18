@@ -9,13 +9,15 @@ from datetime import datetime
 # ==========================================
 # CONFIGURACIÓN DE PÁGINA
 # ==========================================
-st.set_page_config(page_title="Generador de Reportes de Producción", layout="centered")
-st.title("📊 Generador de Reporte Ejecutivo (PDF)")
+st.set_page_config(page_title="Generador de Reportes de Producción - FAMMA", layout="centered")
+st.title("📊 Generador de Reporte Ejecutivo (PDF) - FAMMA")
 
 # ==========================================
-# 1. FUENTE DE DATOS FIJA
+# 1. FUENTE DE DATOS FIJA (NUEVA DIRECCIÓN UNIFICADA)
 # ==========================================
-SHEET_ID = "1TdQ3yNxx29SgQ7u8oexxlnL80rAcXQuP118wQVBd9ew"
+# Nuevo ID del Google Sheets unificado
+SHEET_ID = "1c4aEFtCS-sJZFcH6iLb8AdBVsPrz0pNWayHR2-Dhfm8"
+# El GID de la hoja de PRODUCCION
 GID = "315437448"
 url_csv = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
@@ -24,11 +26,11 @@ def cargar_datos(url):
     return pd.read_csv(url)
 
 try:
-    st.info("Obteniendo datos de producción desde Google Sheets...")
+    st.info("Obteniendo datos de producción de FAMMA desde Google Sheets...")
     df_raw = cargar_datos(url_csv)
     
-    # Pre-procesamiento de fechas
-    df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], errors='coerce')
+    # Pre-procesamiento de fechas (dayfirst=True agregado para arreglar el problema de Enero)
+    df_raw['Fecha'] = pd.to_datetime(df_raw['Fecha'], dayfirst=True, errors='coerce')
     df_raw = df_raw.dropna(subset=['Fecha'])
 
     # ==========================================
@@ -54,8 +56,8 @@ try:
         st.warning("Por favor, selecciona un rango de fechas completo (Inicio y Fin).")
         st.stop()
 
-    # --- LIMPIEZA Y UNIFICACIÓN DE MÁQUINAS ---
-    df_filtrado_fecha = df_filtrado_fecha.dropna(how='all')
+    # --- LIMPIEZA Y UNIFICACIÓN DE MÁQUINAS (ENFOCADO A FAMMA) ---
+    df_filtrado_fecha = df_filtrado_fecha.dropna(subset=['Máquina'])
     df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina'].astype(str).str.strip()
     df_filtrado_fecha = df_filtrado_fecha[~df_filtrado_fecha['Máquina'].str.lower().isin(['nan', 'none', '', 'null'])]
 
@@ -63,6 +65,11 @@ try:
     df_filtrado_fecha['Máquina'] = df_filtrado_fecha['Máquina'].apply(
         lambda x: 'Cell 15 Famma' if 'Cell 15A' in x or 'Cell 15B' in x else x
     )
+
+    # Filtrar solo las máquinas que pertenezcan a Famma (Opcional: Si en la base dice 'Fábrica' Famma, podemos usarlo)
+    # Si quieres asegurarte de que Fumiscor no se mezcle, podemos agregar un filtro si tienes la columna 'Fábrica'.
+    if 'Fábrica' in df_filtrado_fecha.columns:
+         df_filtrado_fecha = df_filtrado_fecha[df_filtrado_fecha['Fábrica'].str.contains('FAMMA', case=False, na=False)]
 
     # Opciones de máquina (Selector múltiple) - Ahora mostrará Cell 15 Famma unificada
     lista_maquinas = sorted(df_filtrado_fecha['Máquina'].unique().tolist())
