@@ -2,143 +2,130 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from fpdf import FPDF
-from datetime import datetime
+import re
 
-# 1. CONFIGURACIÓN
-st.set_page_config(page_title="Reporte Producción FAMMA", layout="centered")
+# 1. CONFIGURACIÓN DE PÁGINA
+st.set_page_config(page_title="FAMMA | Reporte de Cadencia", page_icon="📄")
 
-# 2. FUNCIÓN PDF
-def generar_pdf(dict_resumenes, dict_productos, f_inicio, f_fin):
+# 2. ESTILO SIMPLIFICADO (CSS)
+st.markdown("""
+    <style>
+    .main { text-align: center; }
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# 3. FUNCIÓN PARA GENERAR EL PDF
+def generar_pdf(dict_resumenes, f_inicio, f_fin):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
+    # Título Principal
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(190, 10, "REPORTE DE PRODUCTIVIDAD Y EFICIENCIA - FAMMA", ln=True, align='C')
+    pdf.cell(190, 10, "REPORTE DE CADENCIA Y PRODUCTIVIDAD", ln=True, align='C')
     pdf.set_font("Arial", '', 10)
     pdf.cell(190, 8, f"Periodo: {f_inicio} al {f_fin}", ln=True, align='C')
-    pdf.ln(5)
+    pdf.ln(10)
 
-    for maquina in dict_resumenes.keys():
+    for maquina, df_res in dict_resumenes.items():
+        # Encabezado de Máquina
         pdf.set_font("Arial", 'B', 12)
         pdf.set_fill_color(50, 50, 50); pdf.set_text_color(255, 255, 255)
         pdf.cell(190, 10, f" MAQUINA: {maquina}", ln=True, fill=True)
         pdf.set_text_color(0, 0, 0); pdf.ln(2)
 
-        # CUADRO 1: Resumen Celda
-        pdf.set_font("Arial", 'B', 9)
-        pdf.cell(50, 8, "Refs en Turno", border=1, align='C')
-        pdf.cell(45, 8, "Tiempo (Hs)", border=1, align='C')
-        pdf.cell(45, 8, "Pzas Reales", border=1, align='C')
-        pdf.cell(50, 8, "Pzas/Hora Real", border=1, ln=True, align='C')
+        # Tabla de Datos
+        pdf.set_font("Arial", 'B', 10)
+        pdf.set_fill_color(230, 230, 230)
+        pdf.cell(60, 10, "Cant. Referencias", border=1, fill=True, align='C')
+        pdf.cell(40, 10, "Tiempo (Hs)", border=1, fill=True, align='C')
+        pdf.cell(40, 10, "Piezas Buenas", border=1, fill=True, align='C')
+        pdf.cell(50, 10, "Piezas / Hora", border=1, ln=True, fill=True, align='C')
         
-        pdf.set_font("Arial", '', 9)
-        for _, row in dict_resumenes[maquina].iterrows():
-            pdf.cell(50, 7, f"{int(row['Cant_Refs'])} Referencia(s)", border=1)
-            pdf.cell(45, 7, f"{row['Tiempo_Hs']:.2f}", border=1, align='C')
-            pdf.cell(45, 7, f"{int(row['Buenas'])}", border=1, align='C')
-            pdf.cell(50, 7, f"{row['Pzas_Por_Hora']:.2f}", border=1, ln=True, align='C')
-        
-        pdf.ln(4)
-
-        # CUADRO 2: Desglose Pieza a Pieza (Sincronizado con TC)
-        pdf.set_font("Arial", 'B', 9)
-        pdf.cell(190, 7, "Analisis por Referencia vs Estimado (TC):", ln=True)
-        pdf.set_font("Arial", 'B', 8); pdf.set_fill_color(240, 240, 240)
-        pdf.cell(35, 8, "Codigo", border=1, fill=True)
-        pdf.cell(20, 8, "Refs/T", border=1, fill=True, align='C')
-        pdf.cell(25, 8, "TC (min)", border=1, fill=True, align='C')
-        pdf.cell(25, 8, "Pzas Real", border=1, fill=True, align='C')
-        pdf.cell(25, 8, "Pzas Est.", border=1, fill=True, align='C')
-        pdf.cell(30, 8, "Real P/H", border=1, fill=True, align='C')
-        pdf.cell(30, 8, "Est. P/H", border=1, ln=True, fill=True, align='C')
-
-        pdf.set_font("Arial", '', 7)
-        for _, row in dict_productos[maquina].iterrows():
-            pdf.cell(35, 7, str(row['Código Producto'])[:15], border=1)
-            pdf.cell(20, 7, f"{int(row['Cant_Refs'])}", border=1, align='C')
-            pdf.cell(25, 7, f"{row['Tiempo Ciclo']:.2f}", border=1, align='C')
-            pdf.cell(25, 7, f"{int(row['Buenas'])}", border=1, align='C')
-            pdf.cell(25, 7, f"{row['Pzas_Estimadas_Total']:.0f}", border=1, align='C')
-            pdf.cell(30, 7, f"{row['Pzas_Por_Hora']:.2f}", border=1, align='C')
-            pdf.cell(30, 7, f"{row['Pzas_Estimadas_Hora']:.2f}", border=1, ln=True, align='C')
-        pdf.ln(8)
+        pdf.set_font("Arial", '', 10)
+        for _, row in df_res.iterrows():
+            pdf.cell(60, 9, f"{int(row['Cant_Refs'])} Ref(s) en Turno", border=1)
+            pdf.cell(40, 9, f"{row['Tiempo_Hs']:.2f}", border=1, align='C')
+            pdf.cell(40, 9, f"{int(row['Buenas'])}", border=1, align='C')
+            pdf.cell(50, 9, f"{row['Pzas_Por_Hora']:.2f}", border=1, ln=True, align='C')
+        pdf.ln(10)
 
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
-# 3. CARGA DE DATOS
-SHEET_ID = "1c4aEFtCS-sJZFcH6iLb8AdBVsPrz0pNWayHR2-Dhfm8"
-URL_PROD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=315437448"
-URL_DATOS = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
-
-@st.cache_data(ttl=300)
-def load_and_sync():
-    df_p = pd.read_csv(URL_PROD)
-    df_p.columns = [c.strip() for c in df_p.columns]
+# 4. PROCESAMIENTO DE DATOS
+def procesar_datos(url):
+    # Extraer link de exportación
+    sheet_id = re.search(r'd/([a-zA-Z0-9-_]+)', url).group(1)
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    
+    df = pd.read_csv(csv_url)
+    df.columns = [c.strip() for c in df.columns]
+    
     # Unificar Celda 15
-    df_p['Máquina'] = df_p['Máquina'].replace(['Celda 15', 'Cell 15', 'CELL 15', 'CELDA 15'], 'Celda 15')
-    df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
+    df['Máquina'] = df['Máquina'].astype(str).replace(r'.*15.*', 'Celda 15', regex=True)
     
-    df_d = pd.read_csv(URL_DATOS)
-    df_d.columns = [c.strip() for c in df_d.columns]
-    df_d['Máquina'] = df_d['Máquina'].replace(['Celda 15', 'Cell 15', 'CELL 15', 'CELDA 15'], 'Celda 15')
-    df_d['Fecha'] = pd.to_datetime(df_d['Fecha'], errors='coerce')
-    return df_p.dropna(subset=['Fecha', 'Máquina']), df_d.dropna(subset=['Fecha', 'Máquina'])
-
-# 4. INTERFAZ
-st.title("📄 Reporte Eficiencia FAMMA")
-
-try:
-    df_p_raw, df_d_raw = load_and_sync()
-    maqs = sorted(df_p_raw['Máquina'].unique())
-    sel_maqs = st.multiselect("Seleccione Máquinas", maqs)
+    # Filtrar solo Producción
+    df = df[df['Nivel 1'].str.contains('Producción', na=False, case=False)].copy()
     
-    c1, c2 = st.columns(2)
-    f_ini = c1.date_input("Inicio", df_p_raw['Fecha'].min().date())
-    f_fin = c2.date_input("Fin", df_p_raw['Fecha'].max().date())
+    # Conversiones
+    df['Fecha Inicio'] = pd.to_datetime(df['Fecha Inicio'], errors='coerce')
+    df['Tiempo_Hs'] = pd.to_numeric(df['Tiempo (Min)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0) / 60
+    df['Buenas'] = pd.to_numeric(df['Buenas'], errors='coerce').fillna(0)
+    
+    # Contar Referencias por fila y luego por turno
+    def count_refs(r):
+        p = {str(r.get('Producto 1')), str(r.get('Producto 2'))}
+        return {x for x in p if x.lower() not in ['nan', '', 'none']}
+    
+    df['Refs_Fila'] = df.apply(count_refs, axis=1)
+    df['Fecha_Dia'] = df['Fecha Inicio'].dt.date
+    
+    # Complejidad del turno
+    comp = df.groupby(['Máquina', 'Fecha_Dia', 'Turno'])['Refs_Fila'].apply(lambda x: len(set().union(*x))).reset_index()
+    comp.columns = ['Máquina', 'Fecha_Dia', 'Turno', 'Cant_Refs']
+    
+    return df.merge(comp, on=['Máquina', 'Fecha_Dia', 'Turno'])
 
-    if sel_maqs and f_ini <= f_fin:
-        res_m = {}; res_p = {}
+# --- INTERFAZ STREAMLIT ---
+st.title("📄 Exportador de Cadencia FAMMA")
+st.write("Configuración rápida para reportes en PDF")
 
-        for m in sel_maqs:
-            dp = df_p_raw[(df_p_raw['Máquina'] == m) & (df_p_raw['Fecha'].dt.date >= f_ini) & (df_p_raw['Fecha'].dt.date <= f_fin)].copy()
-            dd = df_d_raw[(df_d_raw['Máquina'] == m) & (df_d_raw['Fecha'].dt.date >= f_ini) & (df_d_raw['Fecha'].dt.date <= f_fin)].copy()
+url_input = st.text_input("1. Pegue el link de Google Sheets", placeholder="https://docs.google.com/spreadsheets/d/...")
 
-            if not dp.empty:
-                # Análisis Refs en DATOS
-                def get_r(r):
-                    vals = [r.get('Producto 1'), r.get('Producto 2'), r.get('Producto 3'), r.get('Producto 4')]
-                    return {str(v).strip() for v in vals if pd.notnull(v) and str(v).strip() != '' and str(v).lower() != 'nan'}
-                
-                dd['RSet'] = dd.apply(get_r, axis=1)
-                comp = dd.groupby(['Fecha', 'Turno'])['RSet'].apply(lambda x: len(set().union(*x))).reset_index()
-                comp.columns = ['Fecha', 'Turno', 'Cant_Refs']
+if url_input:
+    try:
+        df_final = procesar_datos(url_input)
+        
+        # Selección de Máquinas
+        maqs_disponibles = sorted(df_final['Máquina'].unique())
+        sel_maqs = st.multiselect("2. Seleccione las Máquinas", maqs_disponibles)
+        
+        if sel_maqs:
+            # Cálculos finales
+            resumenes = {}
+            for m in sel_maqs:
+                res = df_final[df_final['Máquina'] == m].groupby('Cant_Refs').agg({
+                    'Tiempo_Hs': 'sum',
+                    'Buenas': 'sum'
+                }).reset_index()
+                res['Pzas_Por_Hora'] = np.where(res['Tiempo_Hs'] > 0, res['Buenas'] / res['Tiempo_Hs'], 0)
+                resumenes[m] = res
+            
+            # Botón de Descarga
+            st.write("---")
+            f_ini = df_final['Fecha Inicio'].min().strftime('%d/%m/%Y')
+            f_fin = df_final['Fecha Inicio'].max().strftime('%d/%m/%Y')
+            
+            pdf_bytes = generar_pdf(resumenes, f_ini, f_fin)
+            
+            st.download_button(
+                label="📥 GENERAR Y DESCARGAR PDF",
+                data=pdf_bytes,
+                file_name=f"Reporte_FAMMA_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf"
+            )
+            st.success("Reporte listo para descargar.")
 
-                # Procesar Producción
-                dp['Tiempo_Hs'] = pd.to_numeric(dp['Tiempo Producción (Min)'].astype(str).str.replace(',','.'), errors='coerce').fillna(0)/60
-                dp['Buenas'] = pd.to_numeric(dp['Buenas'], errors='coerce').fillna(0)
-                dp['Tiempo Ciclo'] = pd.to_numeric(dp['Tiempo Ciclo'].astype(str).str.replace(',','.'), errors='coerce').fillna(0)
-                
-                # Sincronizar
-                dfm = dp.merge(comp, on=['Fecha', 'Turno'], how='left').fillna({'Cant_Refs': 1})
-
-                # Resumen Máquina
-                rm = dfm.groupby('Cant_Refs').agg({'Tiempo_Hs': 'sum', 'Buenas': 'sum'}).reset_index()
-                rm['Pzas_Por_Hora'] = np.where(rm['Tiempo_Hs']>0, rm['Buenas']/rm['Tiempo_Hs'], 0)
-                res_m[m] = rm
-
-                # Desglose Producto con Estimaciones
-                rp = dfm.groupby(['Código Producto', 'Cant_Refs']).agg({'Buenas': 'sum', 'Tiempo_Hs': 'sum', 'Tiempo Ciclo': 'mean'}).reset_index()
-                rp['Pzas_Por_Hora'] = np.where(rp['Tiempo_Hs']>0, rp['Buenas']/rp['Tiempo_Hs'], 0)
-                # Cálculos Estimados
-                rp['Pzas_Estimadas_Hora'] = np.where(rp['Tiempo Ciclo']>0, 60 / rp['Tiempo Ciclo'], 0)
-                rp['Pzas_Estimadas_Total'] = rp['Pzas_Estimadas_Hora'] * rp['Tiempo_Hs']
-                
-                res_p[m] = rp.sort_values(['Código Producto', 'Cant_Refs'])
-
-        st.divider()
-        pdf = generar_pdf(res_m, res_p, f_ini, f_fin)
-        st.download_button("📥 DESCARGAR REPORTE PDF", pdf, "Reporte_FAMMA.pdf", "application/pdf", use_container_width=True)
-
-except Exception as e:
-    st.error(f"Error: {e}")
+    except Exception as e:
+        st.error(f"Error: Verifique que el link sea público y las columnas correctas.")
