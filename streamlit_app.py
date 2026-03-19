@@ -1,17 +1,3 @@
-El error que estás viendo es muy común: ocurre porque el sistema intenta leer la fecha asumiendo que el mes va primero (formato de EE. UU. %m/%d/%Y), pero tus datos tienen el día primero (13/01/2026). Como no existe el mes 13, el código se detiene.
-
-Para solucionarlo de forma definitiva en tu script, vamos a modificar la línea donde se convierten las fechas usando el argumento dayfirst=True.
-
-El Código Corregido
-Busca la sección de Procesamiento y reemplaza la línea de conversión de Fecha Inicio por esta:
-
-Python
-# Reemplaza la línea vieja por esta:
-df_p['Fecha Inicio'] = pd.to_datetime(df_p['Fecha Inicio'], dayfirst=True, errors='coerce')
-Código Completo (Actualizado con la corrección de fecha)
-Aquí tienes el bloque completo para que simplemente copies y pegues. He aplicado el cambio en la línea 105 aproximadamente:
-
-Python
 import streamlit as st
 import pandas as pd
 import numpy as np
