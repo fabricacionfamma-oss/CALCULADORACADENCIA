@@ -6,14 +6,14 @@ import re
 from datetime import datetime
 
 # 1. CONFIGURACIÓN
-st.set_page_config(page_title="FAMMA | Corrección de Conteo", layout="centered")
+st.set_page_config(page_title="FAMMA | Analizador Celda 15", layout="centered")
 
 class ReportePDF(FPDF):
     def header(self):
         if self.page_no() > 0:
             self.set_font('Arial', 'B', 8)
             self.set_text_color(150)
-            self.cell(0, 10, 'FAMMA - Reporte de Cadencia y Eficiencia (Piezas Prorrateadas)', 0, 0, 'R')
+            self.cell(0, 10, 'FAMMA - Reporte de Eficiencia Real (Celda 15 Unificada)', 0, 0, 'R')
             self.ln(10)
     def footer(self):
         self.set_y(-15)
@@ -36,26 +36,26 @@ def generar_pdf(dict_resumenes, dict_productos, f_inicio, f_fin):
         # TABLA 1: RESUMEN GLOBAL
         pdf.set_font("Arial", 'B', 11); pdf.cell(190, 8, "1. Rendimiento Global de la Celda", ln=True)
         pdf.set_fill_color(230, 230, 230); pdf.set_font("Arial", 'B', 9)
-        pdf.cell(60, 9, "Cant. Referencias", border=1, fill=True, align='C')
+        pdf.cell(60, 9, "Complejidad (Refs)", border=1, fill=True, align='C')
         pdf.cell(40, 9, "Horas Totales", border=1, fill=True, align='C')
         pdf.cell(40, 9, "Pzas Totales", border=1, fill=True, align='C')
         pdf.cell(50, 9, "Piezas / Hora", border=1, ln=True, fill=True, align='C')
         
         pdf.set_font("Arial", '', 9)
         for _, row in dict_resumenes[maquina].iterrows():
-            pdf.cell(60, 8, f"{int(row['Cant_Refs'])} Ref(s) en Fila", border=1)
+            pdf.cell(60, 8, f"{int(row['Cant_Refs'])} Ref(s) simultaneas", border=1)
             pdf.cell(40, 8, f"{row['Tiempo_Hs']:.2f}", border=1, align='C')
             pdf.cell(40, 8, f"{int(row['Buenas'])}", border=1, align='C')
             cad = row['Buenas'] / row['Tiempo_Hs'] if row['Tiempo_Hs'] > 0 else 0
             pdf.cell(50, 8, f"{cad:.2f}", border=1, ln=True, align='C')
         pdf.ln(10)
 
-        # TABLA 2: DETALLE PRODUCTO (CORREGIDO)
-        pdf.set_font("Arial", 'B', 11); pdf.cell(190, 8, "2. Detalle por Referencia (Piezas y Tiempo Prorrateado)", ln=True)
+        # TABLA 2: DETALLE PRODUCTO
+        pdf.set_font("Arial", 'B', 11); pdf.cell(190, 8, "2. Detalle por Referencia (Prorrateado)", ln=True)
         pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", 'B', 8)
         pdf.cell(45, 9, "Producto", 1, 0, 'C', True)
-        pdf.cell(20, 9, "Refs/F", 1, 0, 'C', True)
+        pdf.cell(20, 9, "Simult.", 1, 0, 'C', True)
         pdf.cell(25, 9, "Hs Prop.", 1, 0, 'C', True)
         pdf.cell(25, 9, "Pzas Prop.", 1, 0, 'C', True)
         pdf.cell(25, 9, "Real P/H", 1, 0, 'C', True)
@@ -78,7 +78,7 @@ def get_csv_url(u):
     gid = re.search(r'gid=([0-9]+)', u).group(1) if 'gid=' in u else '0'
     return f"https://docs.google.com/spreadsheets/d/{mid}/export?format=csv&gid={gid}"
 
-st.title("📊 FAMMA | Analizador de Cadencia (V3)")
+st.title("📊 FAMMA | Control de Celda 15 (Unificada)")
 
 u_p = st.text_input("1. Link de Producción:")
 u_s = st.text_input("2. Link de Estándares:")
@@ -90,21 +90,26 @@ if u_p and u_s:
         df_p.columns = [c.strip() for c in df_p.columns]
         df_s.columns = [c.strip() for c in df_s.columns]
 
-        # Filtro Producción
+        # --- UNIFICACIÓN DE CELDA 15 ---
+        df_p['Máquina'] = df_p['Máquina'].astype(str).replace(r'.*15.*', 'Celda 15', regex=True)
+        df_s['Código Máquina'] = df_s['Código Máquina'].astype(str).replace(r'.*15.*', 'Celda 15', regex=True)
+
         df_p = df_p[df_p['Nivel 1'].str.contains('Producción|Produccion', na=False, case=False)].copy()
         df_p['Fecha Inicio'] = pd.to_datetime(df_p['Fecha Inicio'], dayfirst=True, errors='coerce')
         df_p['Tiempo_Hs'] = pd.to_numeric(df_p['Tiempo (Min)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0) / 60
         df_p['Buenas'] = pd.to_numeric(df_p['Buenas'], errors='coerce').fillna(0)
 
-        # Lógica de Referencias por Fila
+        # Contar referencias por fila
         def get_refs_fila(r):
+            # En la Celda 15, podrías tener hasta 2 productos por fila si es 15A o 15B.
+            # Al unificarlas, el sistema cuenta cuántos hay en esa fila específica.
             prods = [str(r.get('Producto 1')), str(r.get('Producto 2'))]
             return [p.strip() for p in prods if pd.notnull(p) and p.strip().lower() not in ['nan','','none']]
         
         df_p['Prod_List'] = df_p.apply(get_refs_fila, axis=1)
         df_p['Cant_Refs'] = df_p['Prod_List'].apply(lambda x: len(x) if len(x) > 0 else 1)
 
-        # --- PRORRATEO DE TIEMPO Y PIEZAS (CORRECCIÓN DEL 50%) ---
+        # Prorrateo
         df_p['Tiempo_Prorrateado'] = df_p['Tiempo_Hs'] / df_p['Cant_Refs']
         df_p['Buenas_Prorrateadas'] = df_p['Buenas'] / df_p['Cant_Refs']
 
@@ -115,12 +120,9 @@ if u_p and u_s:
             dict_m = {}; dict_p = {}
             for m in sel:
                 df_m = df_p[df_p['Máquina'] == m]
-                
-                # Resumen Máquina (Totales reales sin prorratear piezas para la celda)
                 rm = df_m.groupby('Cant_Refs').agg({'Tiempo_Hs':'sum', 'Buenas':'sum'}).reset_index()
                 dict_m[m] = rm
                 
-                # Resumen Producto (Con prorrateo para evitar duplicación)
                 expandido = []
                 for _, fila in df_m.iterrows():
                     for p in fila['Prod_List']:
@@ -144,7 +146,7 @@ if u_p and u_s:
                     rp['Efic'] = np.where(rp['PH_E'] > 0, (rp['Cadencia_Ind'] / rp['PH_E']) * 100, 0)
                     dict_p[m] = rp.fillna(0).sort_values(['Producto', 'Cant_Refs'])
 
-            st.download_button("📥 DESCARGAR REPORTE CORREGIDO", generar_pdf(dict_m, dict_p, "Inicio", "Fin"), "Reporte_FAMMA.pdf", use_container_width=True)
+            st.download_button("📥 DESCARGAR REPORTE UNIFICADO", generar_pdf(dict_m, dict_p, "Inicio", "Fin"), "Reporte_FAMMA.pdf", use_container_width=True)
 
     except Exception as e:
         st.error(f"Error técnico: {e}")
