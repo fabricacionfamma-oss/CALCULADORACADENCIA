@@ -5,82 +5,105 @@ from fpdf import FPDF
 import re
 from datetime import datetime
 
-# 1. CONFIGURACIÓN
-st.set_page_config(page_title="FAMMA | Productividad Simultánea", layout="wide")
+# 1. CONFIGURACIÓN DE PÁGINA
+st.set_page_config(page_title="FAMMA | Reporte de Cadencia", page_icon="📊", layout="centered")
 
+# Estilo visual simple
+st.markdown("""
+    <style>
+    .stButton>button { width: 100%; border-radius: 8px; height: 3.5em; background-color: #004286; color: white; font-weight: bold; }
+    .stTextInput>div>div>input { border-radius: 8px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# 2. CLASE PDF CON PAGINACIÓN POR CELDA
 class ReportePDF(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 8)
-        self.set_text_color(150)
-        self.cell(0, 10, 'FAMMA - Reporte de Cadencias por Referencias Simultáneas', 0, 0, 'R')
-        self.ln(10)
+        if self.page_no() > 0:
+            self.set_font('Arial', 'B', 8)
+            self.set_text_color(150)
+            self.cell(0, 10, 'FAMMA - Reporte de Cadencia y Eficiencia Real', 0, 0, 'R')
+            self.ln(10)
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+        self.set_text_color(150)
+        self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
-def generar_pdf(dict_maquinas, dict_detalles, f_ini, f_fin):
+def generar_pdf(dict_resumenes, dict_productos, f_inicio, f_fin):
     pdf = ReportePDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    for maq in dict_maquinas.keys():
+    for maquina in dict_resumenes.keys():
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 14)
-        pdf.set_text_color(0, 51, 102)
-        pdf.cell(190, 10, f"ANÁLISIS DE MÁQUINA: {maq}", ln=True)
-        pdf.set_font("Arial", '', 9)
-        pdf.cell(190, 5, f"Periodo: {f_ini} - {f_fin}", ln=True)
+        
+        # Título de la Celda
+        pdf.set_font("Arial", 'B', 16)
+        pdf.set_text_color(0, 66, 134)
+        pdf.cell(190, 10, f"REPORTE CELDA: {maquina}", ln=True, align='L')
+        
+        pdf.set_font("Arial", '', 10)
+        pdf.set_text_color(0)
+        pdf.cell(190, 8, f"Rango: {f_inicio} al {f_fin}", ln=True)
         pdf.ln(5)
 
-        # TABLA 1: TOTALES POR MÁQUINA SEGÚN SIMULTANEIDAD
-        pdf.set_font("Arial", 'B', 10); pdf.cell(190, 7, "1. Rendimiento Global de la Máquina", ln=True)
-        pdf.set_fill_color(240, 240, 240); pdf.set_font("Arial", 'B', 8)
-        pdf.cell(50, 8, "Escenario (Simultáneos)", 1, 0, 'C', True)
-        pdf.cell(45, 8, "Tiempo Total (Hs)", 1, 0, 'C', True)
-        pdf.cell(45, 8, "Piezas Totales", 1, 0, 'C', True)
-        pdf.cell(50, 8, "Cadencia Máquina (P/H)", 1, 1, 'C', True)
+        # TABLA 1: RESUMEN GENERAL MÁQUINA
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(190, 8, "1. Rendimiento Global de la Celda", ln=True)
+        pdf.set_fill_color(230, 230, 230)
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(60, 9, "Escenario Turno", border=1, fill=True, align='C')
+        pdf.cell(40, 9, "Horas Totales", border=1, fill=True, align='C')
+        pdf.cell(40, 9, "Pzas Totales", border=1, fill=True, align='C')
+        pdf.cell(50, 9, "Cadencia (P/H)", border=1, ln=True, fill=True, align='C')
+        
+        pdf.set_font("Arial", '', 9)
+        for _, row in dict_resumenes[maquina].iterrows():
+            pdf.cell(60, 8, f"{int(row['Cant_Refs'])} Referencia(s)", border=1)
+            pdf.cell(40, 8, f"{row['Tiempo_Hs']:.2f}", border=1, align='C')
+            pdf.cell(40, 8, f"{int(row['Buenas'])}", border=1, align='C')
+            pdf.cell(50, 8, f"{row['Cadencia_Maq']:.2f}", border=1, ln=True, align='C')
+        
+        pdf.ln(10)
 
-        pdf.set_font("Arial", '', 8)
-        for _, r in dict_maquinas[maq].iterrows():
-            pdf.cell(50, 7, f"{int(r['Cant_Refs'])} Referencia(s)", 1, 0, 'C')
-            pdf.cell(45, 7, f"{r['Tiempo_Hs']:.2f}", 1, 0, 'C')
-            pdf.cell(45, 7, f"{int(r['Buenas'])}", 1, 0, 'C')
-            pdf.cell(50, 7, f"{r['Cadencia_Maq']:.2f}", 1, 1, 'C')
-        pdf.ln(8)
+        # TABLA 2: DETALLE POR PRODUCTO (CADENCIA INDIVIDUAL)
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(190, 8, "2. Desglose de Cadencia Individual por Producto", ln=True)
+        pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 8)
+        
+        pdf.cell(45, 9, "Producto", border=1, fill=True, align='C')
+        pdf.cell(20, 9, "Refs/T", border=1, fill=True, align='C')
+        pdf.cell(25, 9, "Hs Prop.", border=1, fill=True, align='C')
+        pdf.cell(25, 9, "Pzas", border=1, fill=True, align='C')
+        pdf.cell(25, 9, "Real P/H", border=1, fill=True, align='C')
+        pdf.cell(25, 9, "Est. P/H", border=1, fill=True, align='C')
+        pdf.cell(25, 9, "Eficiencia", border=1, ln=True, fill=True, align='C')
 
-        # TABLA 2: CADENCIA POR PRODUCTO SEGÚN ESCENARIO
-        pdf.set_font("Arial", 'B', 10); pdf.cell(190, 7, "2. Cadencia por Producto según simultaneidad", ln=True)
-        pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", 'B', 7)
-        pdf.cell(45, 8, "Producto", 1, 0, 'C', True)
-        pdf.cell(20, 8, "Simult.", 1, 0, 'C', True)
-        pdf.cell(25, 8, "Hs Proporc.", 1, 0, 'C', True)
-        pdf.cell(25, 8, "Pzas", 1, 0, 'C', True)
-        pdf.cell(25, 8, "Cadencia P/H", 1, 0, 'C', True)
-        pdf.cell(20, 8, "TC Est.", 1, 0, 'C', True)
-        pdf.cell(30, 8, "Efic. Real", 1, 1, 'C', True)
-
-        pdf.set_text_color(0); pdf.set_font("Arial", '', 7)
-        for _, r in dict_detalles[maq].iterrows():
-            pdf.cell(45, 7, str(r['Producto'])[:22], 1)
-            pdf.cell(20, 7, str(int(r['Cant_Refs'])), 1, 0, 'C')
-            pdf.cell(25, 7, f"{r['Tiempo_Proporcional']:.2f}", 1, 0, 'C')
-            pdf.cell(25, 7, str(int(r['Buenas'])), 1, 0, 'C')
-            pdf.cell(25, 7, f"{r['Cadencia_Individual']:.2f}", 1, 0, 'C')
-            pdf.cell(20, 7, f"{r['TC_E']:.2f}", 1, 0, 'C')
-            pdf.cell(30, 7, f"{r['Efic']:.1f}%", 1, 1, 'C')
+        pdf.set_font("Arial", '', 7); pdf.set_text_color(0)
+        df_prod = dict_productos[maquina]
+        for _, row in df_prod.iterrows():
+            pdf.cell(45, 7, str(row['Producto'])[:22], border=1)
+            pdf.cell(20, 7, f"{int(row['Cant_Refs'])}", border=1, align='C')
+            pdf.cell(25, 7, f"{row['Tiempo_Proporcional']:.2f}", border=1, align='C')
+            pdf.cell(25, 7, f"{int(row['Buenas'])}", border=1, align='C')
+            pdf.cell(25, 7, f"{row['Cadencia_Individual']:.2f}", border=1, align='C')
+            pdf.cell(25, 7, f"{row['PH_E']:.2f}", border=1, align='C')
+            pdf.cell(25, 7, f"{row['Efic']:.1f}%", border=1, ln=True, align='C')
 
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
-# 3. LÓGICA DE PROCESAMIENTO
+# 3. PROCESAMIENTO
 def get_csv_url(u):
     mid = re.search(r'd/([a-zA-Z0-9-_]+)', u).group(1)
-    return f"https://docs.google.com/spreadsheets/d/{mid}/export?format=csv"
+    gid = re.search(r'gid=([0-9]+)', u).group(1) if 'gid=' in u else '0'
+    return f"https://docs.google.com/spreadsheets/d/{mid}/export?format=csv&gid={gid}"
 
-st.title("📊 FAMMA: Análisis de Cadencia Simultánea")
+# --- INTERFAZ ---
+st.title("📊 FAMMA | Analizador de Cadencia")
 
-u_prod = st.text_input("Link Producción:")
-u_std = st.text_input("Link Estándares:")
+u_prod = st.text_input("1. Link de Producción (Eventos):")
+u_std = st.text_input("2. Link de Estándares (Tiempos de Ciclo):")
 
 if u_prod and u_std:
     try:
@@ -92,42 +115,42 @@ if u_prod and u_std:
 
         # Unificar Celda 15
         df_p['Máquina'] = df_p['Máquina'].astype(str).replace(r'.*15.*', 'Celda 15', regex=True)
+        df_s['Código Máquina'] = df_s['Código Máquina'].astype(str).replace(r'.*15.*', 'Celda 15', regex=True)
         
-        # Limpieza de datos
+        # Limpieza de datos reales
         df_p = df_p[df_p['Nivel 1'].str.contains('Producción', na=False, case=False)].copy()
         df_p['Tiempo_Hs'] = pd.to_numeric(df_p['Tiempo (Min)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0) / 60
         df_p['Buenas'] = pd.to_numeric(df_p['Buenas'], errors='coerce').fillna(0)
         df_p['Fecha_D'] = pd.to_datetime(df_p['Fecha Inicio']).dt.date
 
-        # Determinar simultaneidad por Turno
-        def obtener_lista_productos(fila):
-            return [str(fila[p]).strip() for p in ['Producto 1', 'Producto 2'] if pd.notnull(fila[p]) and str(fila[p]).lower() not in ['nan','','none']]
-
-        df_p['Prod_List'] = df_p.apply(obtener_lista_productos, axis=1)
+        # Cantidad de productos por fila
+        def get_refs_fila(r):
+            return [str(r.get(p)).strip() for p in ['Producto 1', 'Producto 2'] if pd.notnull(r.get(p)) and str(r.get(p)).lower() not in ['nan','','none']]
         
-        # Cantidad de referencias distintas en el turno (Escenario)
-        complejidad = df_p.groupby(['Máquina', 'Fecha_D', 'Turno'])['Prod_List'].apply(lambda x: len(set([p for sub in x for p in sub]))).reset_index()
-        complejidad.columns = ['Máquina', 'Fecha_D', 'Turno', 'Cant_Refs']
-        df_p = df_p.merge(complejidad, on=['Máquina', 'Fecha_D', 'Turno'])
+        df_p['Prod_List'] = df_p.apply(get_refs_fila, axis=1)
+        
+        # Complejidad del turno (Refs simultáneas)
+        comp = df_p.groupby(['Máquina', 'Fecha_D', 'Turno'])['Prod_List'].apply(lambda x: len(set([p for sub in x for p in sub]))).reset_index()
+        comp.columns = ['Máquina', 'Fecha_D', 'Turno', 'Cant_Refs']
+        df_p = df_p.merge(comp, on=['Máquina', 'Fecha_D', 'Turno'])
 
-        # --- CÁLCULO DE PRORRATEO ---
-        # Si una fila tiene 2 productos, cada uno consume la mitad del tiempo de esa fila
+        # Prorrateo de tiempo: Si hay 2 productos en fila, cada uno usa la mitad del tiempo
         df_p['Tiempo_Prorrateado'] = df_p['Tiempo_Hs'] / df_p['Prod_List'].apply(lambda x: len(x) if len(x) > 0 else 1)
 
         maqs = sorted(df_p['Máquina'].unique())
         sel = st.multiselect("Seleccione Máquinas:", maqs)
 
         if sel:
-            d_maq = {}; d_det = {}
+            dict_m = {}; dict_p = {}
             for m in sel:
                 df_m = df_p[df_p['Máquina'] == m]
                 
-                # 1. Agrupación por Máquina y Escenario
-                res_m = df_m.groupby('Cant_Refs').agg({'Tiempo_Hs':'sum', 'Buenas':'sum'}).reset_index()
-                res_m['Cadencia_Maq'] = res_m['Buenas'] / res_m['Tiempo_Hs']
-                d_maq[m] = res_m
+                # 1. Resumen Máquina
+                rm = df_m.groupby('Cant_Refs').agg({'Tiempo_Hs':'sum', 'Buenas':'sum'}).reset_index()
+                rm['Cadencia_Maq'] = rm['Buenas'] / rm['Tiempo_Hs']
+                dict_m[m] = rm
                 
-                # 2. Agrupación por Producto y Escenario
+                # 2. Resumen Producto (Expandido)
                 expandido = []
                 for _, fila in df_m.iterrows():
                     for p in fila['Prod_List']:
@@ -138,6 +161,27 @@ if u_prod and u_std:
                             'Buenas': fila['Buenas']
                         })
                 
-                df_exp = pd.DataFrame(expandido)
-                res_p = df_exp.groupby(['Producto', 'Cant_Refs']).agg({'Tiempo_Proporcional':'sum', 'Buenas':'sum'}).reset_index()
-                res_p['Cad
+                if expandido:
+                    df_exp = pd.DataFrame(expandido)
+                    rp = df_exp.groupby(['Producto', 'Cant_Refs']).agg({'Tiempo_Proporcional':'sum', 'Buenas':'sum'}).reset_index()
+                    rp['Cadencia_Individual'] = rp['Buenas'] / rp['Tiempo_Proporcional']
+                    
+                    # Estándares
+                    std_c = df_s[['Código Producto', 'Tiempo Ciclo']].copy()
+                    std_c['TC_E'] = pd.to_numeric(std_c['Tiempo Ciclo'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+                    
+                    rp = rp.merge(std_c, left_on='Producto', right_on='Código Producto', how='left')
+                    rp['PH_E'] = np.where(rp['TC_E'] > 0, 60 / rp['TC_E'], 0)
+                    rp['Efic'] = np.where(rp['PH_E'] > 0, (rp['Cadencia_Individual'] / rp['PH_E']) * 100, 0)
+                    
+                    dict_p[m] = rp.fillna(0).sort_values(['Producto', 'Cant_Refs'])
+
+            st.divider()
+            f_i = df_p['Fecha Inicio'].min().strftime('%d/%m/%Y')
+            f_f = df_p['Fecha Inicio'].max().strftime('%d/%m/%Y')
+            
+            pdf_bytes = generar_pdf(dict_m, dict_p, f_i, f_f)
+            st.download_button("📥 DESCARGAR REPORTE PDF", pdf_bytes, "Reporte_Cadencia_FAMMA.pdf", use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error técnico: {e}")
