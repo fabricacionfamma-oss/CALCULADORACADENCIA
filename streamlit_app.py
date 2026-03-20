@@ -5,7 +5,7 @@ from fpdf import FPDF
 import re
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="FAMMA | Reporte de Producción", layout="centered")
+st.set_page_config(page_title="Reporte de Producción", layout="centered")
 
 # --- 2. CLASE PARA EL REPORTE PDF ---
 class ReportePDF(FPDF):
@@ -244,7 +244,7 @@ def generar_pdf(maquinas, df_global, df_productos):
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
 # --- 4. INTERFAZ DE STREAMLIT ---
-st.title("📊 FAMMA | Calculadora de Eficiencia Unificada")
+st.title("📊 Calculadora de Eficiencia Unificada")
 
 u_p = st.text_input("1. Link de Datos de Producción (Google Sheets CSV):")
 u_s = st.text_input("2. Link de Tiempos de Ciclo (Google Sheets CSV):")
