@@ -41,31 +41,30 @@ def procesar_datos(df_p, df_s):
         df_p['Máquina'] = df_p['Máquina'].astype(str).str.strip()
         df_p['Máquina'] = df_p['Máquina'].replace(r'(?i).*15.*', 'Celda 15', regex=True)
     
-    # Filtrar solo Nivel 1 = Producción
-    col_n1 = 'Nivel 1' if 'Nivel 1' in df_p.columns else df_p.columns[10]
-    df_p[col_n1] = df_p[col_n1].fillna('')
-    df_p = df_p[df_p[col_n1].astype(str).str.contains('(?i)producci')]
+    # Filtrar solo Nivel 1 = Producción (Busca dinámicamente la columna)
+    col_n1 = 'Nivel 1' if 'Nivel 1' in df_p.columns else 'Nivel 1'
+    if col_n1 in df_p.columns:
+        df_p[col_n1] = df_p[col_n1].fillna('')
+        df_p = df_p[df_p[col_n1].astype(str).str.contains('(?i)producci')]
 
     # Limpiar columnas numéricas
     df_p['Tiempo (Min)'] = pd.to_numeric(df_p['Tiempo (Min)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
     df_p['Buenas'] = pd.to_numeric(df_p['Buenas'], errors='coerce').fillna(0)
     df_p['No Buenas'] = pd.to_numeric(df_p['No Buenas'], errors='coerce').fillna(0)
     
-    # 2. CREACIÓN DE VENTANA DE TIEMPO (Para forzar la fusión de 15A y 15B)
-    # Convertimos a formato fecha real
+    # 2. CREACIÓN DE VENTANA DE TIEMPO (Fusión de horarios y máquinas)
     fi_dt = pd.to_datetime(df_p['Fecha Inicio'], dayfirst=True, errors='coerce')
     ff_dt = pd.to_datetime(df_p['Fecha Fin'], dayfirst=True, errors='coerce')
     
-    # "Achatamos" los minutos a la hora base (Ej: 06:14 y 06:05 se convierten ambos en 06:00)
     df_p['fi_key'] = fi_dt.dt.floor('H').dt.strftime('%Y-%m-%d %H:00').fillna(df_p['Fecha Inicio'].astype(str))
     df_p['ff_key'] = ff_dt.dt.floor('H').dt.strftime('%Y-%m-%d %H:00').fillna(df_p['Fecha Fin'].astype(str))
     
     df_p['Clave_Evento'] = df_p['fi_key'] + " | " + df_p['ff_key']
 
-    # 3. AGRUPAR Y FUSIONAR EVENTOS
+    # 3. AGRUPAR Y FUSIONAR EVENTOS (ESCALABLE A CUALQUIER CANTIDAD DE PRODUCTOS)
     def procesar_evento(grupo):
         prods = []
-        # Buscamos en todas las columnas que digan "Producto"
+        # Dinámico: Busca cualquier columna que contenga la palabra "Producto"
         for col in grupo.columns:
             if 'Producto' in str(col):
                 for val in grupo[col].dropna().astype(str):
@@ -73,14 +72,12 @@ def procesar_datos(df_p, df_s):
                     if val and val.lower() not in ['nan', 'none']:
                         prods.append(val)
         
-        # Elimina duplicados (si 15A y 15B hicieron el mismo producto, cuenta como 1. Si son distintos, los suma)
+        # Elimina duplicados y cuenta cuántos productos únicos hay (N puede ser 1, 5, 10, etc.)
         unique_prods = list(set(prods)) 
         n = len(unique_prods) if len(unique_prods) > 0 else 1
         
-        # Como ocurren en paralelo, el tiempo real consumido es el máximo de ese bloque, no la suma
         tiempo_hs = grupo['Tiempo (Min)'].max() / 60.0 
         
-        # Se suman todas las piezas físicas hechas por la celda y se prorratean
         pzas_totales = grupo['Buenas'].sum() + grupo['No Buenas'].sum()
         pzas_prorrateadas = pzas_totales / n
         
@@ -91,7 +88,6 @@ def procesar_datos(df_p, df_s):
             'Productos': unique_prods
         })
 
-    # Esta línea agrupa mágicamente Celda 15A y 15B bajo la misma "Celda 15" y bloque horario
     df_eventos = df_p.groupby(['Máquina', 'Clave_Evento']).apply(procesar_evento).reset_index()
     df_eventos = df_eventos[(df_eventos['Tiempo_Hs'] > 0) | (df_eventos['Pzas_Prorrateadas'] > 0)]
 
@@ -173,7 +169,7 @@ def generar_pdf(maquinas, df_global, df_productos):
                 if t_hs > 0 or p_tot > 0:
                     ph_prom = p_tot / t_hs if t_hs > 0 else 0
                     pdf.cell(35, 8, maq, 1, 0, 'C')
-                    pdf.cell(35, 8, str(int(n)), 1, 0, 'C')
+                    pdf.cell(35, 8, str(int(n)), 1, 0, 'C') # Aquí imprimirá 5 cuando ocurra
                     pdf.cell(35, 8, f"{t_hs:.2f}", 1, 0, 'C')
                     pdf.cell(45, 8, f"{int(p_tot)}", 1, 0, 'C')
                     pdf.cell(40, 8, f"{ph_prom:.2f}", 1, 1, 'C')
@@ -227,7 +223,7 @@ def generar_pdf(maquinas, df_global, df_productos):
                         ph_est = 60 / tc if tc > 0 else 0 
                         diferencia = ph_real - ph_est
                         
-                        pdf.cell(25, 8, str(int(n)), 1, 0, 'C')
+                        pdf.cell(25, 8, str(int(n)), 1, 0, 'C') # Mismo caso: si N=5, imprimirá 5
                         pdf.cell(25, 8, f"{t_hs:.2f}", 1, 0, 'C')
                         pdf.cell(30, 8, f"{int(p_tot)}", 1, 0, 'C')
                         pdf.cell(25, 8, f"{ph_real:.2f}", 1, 0, 'C')
