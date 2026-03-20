@@ -12,7 +12,7 @@ class ReportePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 12)
         self.set_text_color(0, 66, 134)
-        self.cell(0, 10, 'FAMMA - Reporte de Eficiencia de Produccion', 0, 0, 'C')
+        self.cell(0, 10, 'Reporte de Eficiencia de Produccion', 0, 0, 'C')
         self.ln(15)
 
     def footer(self):
