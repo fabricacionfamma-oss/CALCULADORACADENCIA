@@ -51,7 +51,7 @@ def procesar_datos(df_p, df_s):
             for col in ['Producto 1', 'Producto 2']:
                 if col in row and pd.notna(row[col]) and str(row[col]).strip().lower() not in ['', 'nan', 'none']:
                     prods.append(str(row[col]).strip())
-        return list(set(prods))[:4]
+        return list(set(prods))[:4] # Máximo 4 piezas simultáneas únicas
 
     agrupado = df_p.groupby(['Máquina', 'Nivel 1']).apply(lambda g: pd.Series({
         'Tiempo_Hs': g['Tiempo (Min)'].sum() / 60,
@@ -61,7 +61,7 @@ def procesar_datos(df_p, df_s):
 
     agrupado = agrupado[(agrupado['Tiempo_Hs'] > 0) | (agrupado['Total_Pzas_Fisicas'] > 0)]
 
-    # 3. Cálculos de Simultaneidad y Prorrateo (Solo afecta a la producción REAL)
+    # 3. Cálculos de Simultaneidad y Prorrateo
     agrupado['Cant_Simultaneas'] = agrupado['Productos'].apply(lambda x: len(x) if len(x) > 0 else 1)
     agrupado['Pzas_Prorrateadas'] = agrupado['Total_Pzas_Fisicas'] / agrupado['Cant_Simultaneas']
 
@@ -123,20 +123,23 @@ def generar_pdf(maquinas, agrupado_eventos, df_productos):
         }).reset_index()
 
         pdf.set_font("Arial", '', 8)
-        for i in range(1, 5):
+        
+        # DETECCIÓN DINÁMICA: Solo itera sobre los casos que realmente existieron para esta máquina
+        casos_existentes_maq = sorted(resumen_maq['Cant_Simultaneas'].unique())
+        
+        for i in casos_existentes_maq:
             row = resumen_maq[resumen_maq['Cant_Simultaneas'] == i]
-            if not row.empty:
-                t_hs = row['Tiempo_Hs'].values[0]
-                p_tot = row['Pzas_Prorrateadas'].values[0]
+            t_hs = row['Tiempo_Hs'].values[0]
+            p_tot = row['Pzas_Prorrateadas'].values[0]
+            
+            # Solo dibuja la fila si hubo tiempo o piezas contabilizadas
+            if t_hs > 0 or p_tot > 0:
                 ph_prom = p_tot / t_hs if t_hs > 0 else 0
-            else:
-                t_hs, p_tot, ph_prom = 0, 0, 0
-
-            pdf.cell(35, 8, maq, 1, 0, 'C')
-            pdf.cell(35, 8, str(i), 1, 0, 'C')
-            pdf.cell(35, 8, f"{t_hs:.2f}", 1, 0, 'C')
-            pdf.cell(45, 8, f"{int(p_tot)}", 1, 0, 'C')
-            pdf.cell(40, 8, f"{ph_prom:.2f}", 1, 1, 'C')
+                pdf.cell(35, 8, maq, 1, 0, 'C')
+                pdf.cell(35, 8, str(int(i)), 1, 0, 'C')
+                pdf.cell(35, 8, f"{t_hs:.2f}", 1, 0, 'C')
+                pdf.cell(45, 8, f"{int(p_tot)}", 1, 0, 'C')
+                pdf.cell(40, 8, f"{ph_prom:.2f}", 1, 1, 'C')
 
         pdf.ln(10)
 
@@ -150,6 +153,17 @@ def generar_pdf(maquinas, agrupado_eventos, df_productos):
             productos_unicos = df_maq_prods['Producto'].unique()
             
             for prod in productos_unicos:
+                df_p_data = df_maq_prods[df_maq_prods['Producto'] == prod]
+                resumen_prod = df_p_data.groupby('Simultaneo_Con').agg({
+                    'Tiempo_Hs': 'sum',
+                    'Pzas_Prorrateadas': 'sum',
+                    'TC': 'first'
+                }).reset_index()
+
+                # Si por alguna razón la pieza está pero tiene 0 hs y 0 pzas, la omite
+                if resumen_prod['Tiempo_Hs'].sum() == 0 and resumen_prod['Pzas_Prorrateadas'].sum() == 0:
+                    continue
+
                 pdf.set_font("Arial", 'B', 9)
                 pdf.set_fill_color(0, 66, 134)
                 pdf.set_text_color(255, 255, 255)
@@ -166,27 +180,24 @@ def generar_pdf(maquinas, agrupado_eventos, df_productos):
                 pdf.cell(30, 8, "P/H Estimada", 1, 0, 'C', True)
                 pdf.cell(30, 8, "Diferencia", 1, 1, 'C', True)
 
-                df_p_data = df_maq_prods[df_maq_prods['Producto'] == prod]
-                resumen_prod = df_p_data.groupby('Simultaneo_Con').agg({
-                    'Tiempo_Hs': 'sum',
-                    'Pzas_Prorrateadas': 'sum',
-                    'TC': 'first'
-                }).reset_index()
-
                 pdf.set_font("Arial", '', 8)
-                for i in range(1, 5):
+                
+                # DETECCIÓN DINÁMICA: Solo muestra la simultaneidad real ocurrida en la pieza
+                casos_existentes_prod = sorted(resumen_prod['Simultaneo_Con'].unique())
+                
+                for i in casos_existentes_prod:
                     row = resumen_prod[resumen_prod['Simultaneo_Con'] == i]
-                    if not row.empty:
-                        t_hs = row['Tiempo_Hs'].values[0]
-                        p_tot = row['Pzas_Prorrateadas'].values[0]
+                    t_hs = row['Tiempo_Hs'].values[0]
+                    p_tot = row['Pzas_Prorrateadas'].values[0]
+                    
+                    if t_hs > 0 or p_tot > 0:
                         tc = row['TC'].values[0]
                         
                         ph_real = p_tot / t_hs if t_hs > 0 else 0
-                        # CORRECCIÓN AQUÍ: P/H Estimada es un estándar fijo (60 / TC) y no se divide por la simultaneidad (i)
                         ph_est = 60 / tc if tc > 0 else 0 
                         diferencia = ph_real - ph_est
                         
-                        pdf.cell(25, 8, str(i), 1, 0, 'C')
+                        pdf.cell(25, 8, str(int(i)), 1, 0, 'C')
                         pdf.cell(25, 8, f"{t_hs:.2f}", 1, 0, 'C')
                         pdf.cell(30, 8, f"{int(p_tot)}", 1, 0, 'C')
                         pdf.cell(25, 8, f"{ph_real:.2f}", 1, 0, 'C')
