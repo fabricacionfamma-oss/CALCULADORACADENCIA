@@ -36,9 +36,10 @@ def procesar_datos(df_p, df_s):
     df_p.columns = [c.strip() for c in df_p.columns]
     df_s.columns = [c.strip() for c in df_s.columns]
 
-    # 1. Unificación Máquina Celda 15
+    # 1. Unificación Celda 15
     if 'Máquina' in df_p.columns:
-        df_p['Máquina'] = df_p['Máquina'].astype(str).replace(r'(?i).*15.*', 'Celda 15', regex=True)
+        df_p['Máquina'] = df_p['Máquina'].astype(str).str.strip()
+        df_p['Máquina'] = df_p['Máquina'].replace(r'(?i).*15.*', 'Celda 15', regex=True)
     
     # Filtrar solo Nivel 1 = Producción
     col_n1 = 'Nivel 1' if 'Nivel 1' in df_p.columns else df_p.columns[10]
@@ -50,23 +51,21 @@ def procesar_datos(df_p, df_s):
     df_p['Buenas'] = pd.to_numeric(df_p['Buenas'], errors='coerce').fillna(0)
     df_p['No Buenas'] = pd.to_numeric(df_p['No Buenas'], errors='coerce').fillna(0)
     
-    # 2. DEFINIR EL "EVENTO" POR HORARIO PARA FUSIONAR 15A y 15B
-    df_p['Fecha Inicio'] = df_p['Fecha Inicio'].fillna('').astype(str).str.strip()
-    df_p['Fecha Fin'] = df_p['Fecha Fin'].fillna('').astype(str).str.strip()
+    # 2. CREACIÓN DE VENTANA DE TIEMPO (Para forzar la fusión de 15A y 15B)
+    # Convertimos a formato fecha real
+    fi_dt = pd.to_datetime(df_p['Fecha Inicio'], dayfirst=True, errors='coerce')
+    ff_dt = pd.to_datetime(df_p['Fecha Fin'], dayfirst=True, errors='coerce')
     
-    def get_event_key(r):
-        fi = r['Fecha Inicio']
-        ff = r['Fecha Fin']
-        # Si no hay fecha, se trata como un evento aislado usando su número de fila
-        if (not fi and not ff) or (fi.lower() == 'nan' and ff.lower() == 'nan'):
-            return f"Fila_{r.name}"
-        return f"{fi} | {ff}"
-        
-    df_p['Clave_Evento'] = df_p.apply(get_event_key, axis=1)
+    # "Achatamos" los minutos a la hora base (Ej: 06:14 y 06:05 se convierten ambos en 06:00)
+    df_p['fi_key'] = fi_dt.dt.floor('H').dt.strftime('%Y-%m-%d %H:00').fillna(df_p['Fecha Inicio'].astype(str))
+    df_p['ff_key'] = ff_dt.dt.floor('H').dt.strftime('%Y-%m-%d %H:00').fillna(df_p['Fecha Fin'].astype(str))
+    
+    df_p['Clave_Evento'] = df_p['fi_key'] + " | " + df_p['ff_key']
 
-    # 3. AGRUPAR POR EVENTO (Esto fusiona mágicamente 15A y 15B si corren a la misma hora)
+    # 3. AGRUPAR Y FUSIONAR EVENTOS
     def procesar_evento(grupo):
         prods = []
+        # Buscamos en todas las columnas que digan "Producto"
         for col in grupo.columns:
             if 'Producto' in str(col):
                 for val in grupo[col].dropna().astype(str):
@@ -74,13 +73,14 @@ def procesar_datos(df_p, df_s):
                     if val and val.lower() not in ['nan', 'none']:
                         prods.append(val)
         
-        unique_prods = list(set(prods)) # Obtiene todos los productos únicos del bloque horario
-        n = len(unique_prods) if len(unique_prods) > 0 else 1 # Factor N (1, 2, 3 o 4)
+        # Elimina duplicados (si 15A y 15B hicieron el mismo producto, cuenta como 1. Si son distintos, los suma)
+        unique_prods = list(set(prods)) 
+        n = len(unique_prods) if len(unique_prods) > 0 else 1
         
-        # El tiempo real de la máquina en ese bloque es el máximo, no la suma, porque ocurren a la vez
+        # Como ocurren en paralelo, el tiempo real consumido es el máximo de ese bloque, no la suma
         tiempo_hs = grupo['Tiempo (Min)'].max() / 60.0 
         
-        # Las piezas totales de la celda es la sumatoria de todo lo producido en ese bloque
+        # Se suman todas las piezas físicas hechas por la celda y se prorratean
         pzas_totales = grupo['Buenas'].sum() + grupo['No Buenas'].sum()
         pzas_prorrateadas = pzas_totales / n
         
@@ -91,10 +91,11 @@ def procesar_datos(df_p, df_s):
             'Productos': unique_prods
         })
 
+    # Esta línea agrupa mágicamente Celda 15A y 15B bajo la misma "Celda 15" y bloque horario
     df_eventos = df_p.groupby(['Máquina', 'Clave_Evento']).apply(procesar_evento).reset_index()
     df_eventos = df_eventos[(df_eventos['Tiempo_Hs'] > 0) | (df_eventos['Pzas_Prorrateadas'] > 0)]
 
-    # 4. TABLA GLOBAL (Simulando Subtotales de Excel)
+    # 4. TABLA GLOBAL
     df_global = df_eventos.groupby(['Máquina', 'N']).agg({
         'Tiempo_Hs': 'sum',
         'Pzas_Prorrateadas': 'sum'
@@ -234,12 +235,12 @@ def generar_pdf(maquinas, df_global, df_productos):
                         pdf.cell(30, 8, f"{ph_est:.2f}", 1, 0, 'C')
                         
                         if diferencia < 0:
-                            pdf.set_text_color(200, 0, 0) # Rojo (Negativo es por debajo de lo estimado)
+                            pdf.set_text_color(200, 0, 0)
                         else:
-                            pdf.set_text_color(0, 150, 0) # Verde
+                            pdf.set_text_color(0, 150, 0)
                             
                         pdf.cell(30, 8, f"{diferencia:.2f}", 1, 1, 'C')
-                        pdf.set_text_color(0, 0, 0) # Reseteo
+                        pdf.set_text_color(0, 0, 0)
         else:
             pdf.set_font("Arial", '', 9)
             pdf.cell(0, 8, "No hay productos registrados para esta máquina.", 0, 1)
@@ -254,7 +255,7 @@ u_s = st.text_input("2. Link de Tiempos de Ciclo (Google Sheets CSV):")
 
 if u_p and u_s:
     try:
-        with st.spinner("Procesando datos y calculando cadencias..."):
+        with st.spinner("Fusionando horarios y calculando cadencias..."):
             df_p = pd.read_csv(get_csv_url(u_p))
             df_s = pd.read_csv(get_csv_url(u_s))
             df_global, df_productos = procesar_datos(df_p, df_s)
