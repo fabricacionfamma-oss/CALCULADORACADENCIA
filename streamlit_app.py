@@ -3,29 +3,25 @@ import pandas as pd
 import numpy as np
 from fpdf import FPDF
 import re
-from io import BytesIO
 
-# 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(
-    page_title="FAMMA | Analizador de Eficiencia Unificada Celda 15",
-    layout="wide",  # Layout ancho para mayor claridad
-    initial_sidebar_state="collapsed",
-)
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="FAMMA | Reporte de Producción", layout="centered")
 
-# 2. DEFINICIÓN DEL REPORTE PDF (Reutilizando el estilo del ejemplo)
+# --- 2. CLASE PARA EL REPORTE PDF ---
 class ReportePDF(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 10)
-        self.set_text_color(150)
-        self.cell(0, 10, 'FAMMA - Reporte de Eficiencia Real y Prorrateada (Celda 15)', 0, 0, 'R')
-        self.ln(10)
+        self.set_font('Arial', 'B', 12)
+        self.set_text_color(0, 66, 134)
+        self.cell(0, 10, 'FAMMA - Reporte de Eficiencia de Produccion', 0, 0, 'C')
+        self.ln(15)
 
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
+        self.set_text_color(128)
         self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
-# Función para convertir URL de vista a CSV
+# --- 3. FUNCIONES DE PROCESAMIENTO ---
 def get_csv_url(u):
     try:
         if 'd/' in u:
@@ -36,219 +32,207 @@ def get_csv_url(u):
         pass
     return u
 
-# Función para preprocesar datos de producción
-def preprocesar_datos(df_p):
-    df_p.columns = [c.strip() for c in df_p.columns]  # Limpiar nombres de columnas
+def procesar_datos(df_p, df_s):
+    df_p.columns = [c.strip() for c in df_p.columns]
+    df_s.columns = [c.strip() for c in df_s.columns]
 
-    # UNIFICACIÓN DE MÁQUINAS: Reemplazar cualquier cosa con "15" por "Celda 15"
+    # 1. Limpieza y Unificación Celda 15
     if 'Máquina' in df_p.columns:
-        df_p['Máquina'] = df_p['Máquina'].astype(str).replace(r'.*15.*', 'Celda 15', regex=True)
-
-    # Filtrado por 'Producción' en Nivel 1 (Columna K)
-    # Ignora mayúsculas/minúsculas y acentos
-    df_p = df_p[df_p['Nivel 1'].str.contains('Producci|Produccion', na=False, case=False)].copy()
-
-    # Parseo de fechas y números
-    df_p['Fecha Inicio'] = pd.to_datetime(df_p['Fecha Inicio'], dayfirst=True, errors='coerce')
-    df_p['Tiempo_Hs'] = pd.to_numeric(df_p['Tiempo (Min)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0) / 60
+        df_p['Máquina'] = df_p['Máquina'].astype(str).replace(r'(?i).*15.*', 'Celda 15', regex=True)
+    
+    df_p['Tiempo (Min)'] = pd.to_numeric(df_p['Tiempo (Min)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
     df_p['Buenas'] = pd.to_numeric(df_p['Buenas'], errors='coerce').fillna(0)
     df_p['No Buenas'] = pd.to_numeric(df_p['No Buenas'], errors='coerce').fillna(0)
-    df_p['Piezas_Totales'] = df_p['Buenas'] + df_p['No Buenas']
-
-    # Identificar productos simultáneos (hasta 4)
-    def get_refs_fila(r):
+    
+    # 2. Agrupar por Evento de Producción (Nivel 1 / Columna K)
+    def extraer_productos(grupo):
         prods = []
-        for i in range(1, 5):  # Busca Producto 1, 2, 3, 4
-            col_prod = f'Producto {i}'
-            if col_prod in r and pd.notnull(r[col_prod]):
-                val = str(r[col_prod]).strip()
-                if val.lower() not in ['nan','','none']:
-                    prods.append(val)
-        return prods
+        for _, row in grupo.iterrows():
+            for col in ['Producto 1', 'Producto 2']:
+                if col in row and pd.notna(row[col]) and str(row[col]).strip().lower() not in ['', 'nan', 'none']:
+                    prods.append(str(row[col]).strip())
+        return list(set(prods))[:4]
 
-    df_p['Prod_List'] = df_p.apply(get_refs_fila, axis=1)
-    df_p['Cant_Refs'] = df_p['Prod_List'].apply(lambda x: len(x) if len(x) > 0 else 1)
+    agrupado = df_p.groupby(['Máquina', 'Nivel 1']).apply(lambda g: pd.Series({
+        'Tiempo_Hs': g['Tiempo (Min)'].sum() / 60,
+        'Total_Pzas_Fisicas': g['Buenas'].sum() + g['No Buenas'].sum(),
+        'Productos': extraer_productos(g)
+    })).reset_index()
 
-    # CÁLCULO PRORRATEADO POR REFERENCIA (SIMULTANEIDAD N)
-    df_p['Tiempo_Prorrateado_Hs'] = df_p['Tiempo_Hs'] / df_p['Cant_Refs']
-    df_p['Piezas_Prorrateadas'] = df_p['Piezas_Totales'] / df_p['Cant_Refs']
+    agrupado = agrupado[(agrupado['Tiempo_Hs'] > 0) | (agrupado['Total_Pzas_Fisicas'] > 0)]
 
-    return df_p
+    # 3. Cálculos de Simultaneidad y Prorrateo (Solo afecta a la producción REAL)
+    agrupado['Cant_Simultaneas'] = agrupado['Productos'].apply(lambda x: len(x) if len(x) > 0 else 1)
+    agrupado['Pzas_Prorrateadas'] = agrupado['Total_Pzas_Fisicas'] / agrupado['Cant_Simultaneas']
 
-# Función para preprocesar tiempos de ciclo
-def preprocesar_ciclos(df_s):
-    df_s.columns = [c.strip() for c in df_s.columns]  # Limpiar nombres de columnas
-    if 'Máquina' in df_s.columns:
-        df_s['Máquina'] = df_s['Máquina'].astype(str).replace(r'.*15.*', 'Celda 15', regex=True)
-    df_s['Tiempo Ciclo'] = pd.to_numeric(df_s['Tiempo Ciclo'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
-    return df_s
+    # 4. Desglosar datos para tabla de productos individuales
+    registros_productos = []
+    for _, fila in agrupado.iterrows():
+        cant = fila['Cant_Simultaneas']
+        for prod in fila['Productos']:
+            registros_productos.append({
+                'Máquina': fila['Máquina'],
+                'Producto': prod,
+                'Simultaneo_Con': cant,
+                'Tiempo_Hs': fila['Tiempo_Hs'],
+                'Pzas_Prorrateadas': fila['Pzas_Prorrateadas']
+            })
+    
+    df_prod_desglosado = pd.DataFrame(registros_productos)
 
-# Función para generar el PDF completo
-def generar_pdf(maquinas_seleccionadas, df_global, df_productos_prorrateados):
-    pdf = ReportePDF(orientation='P', unit='mm', format='A4')
+    # 5. Integrar Tiempos de Ciclo
+    col_tc = 'Tiempo Ciclo' if 'Tiempo Ciclo' in df_s.columns else df_s.columns[2]
+    col_cod = 'Código Producto' if 'Código Producto' in df_s.columns else df_s.columns[0]
+    df_s[col_tc] = pd.to_numeric(df_s[col_tc].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+    df_s_min = df_s[[col_cod, col_tc]].drop_duplicates()
+
+    if not df_prod_desglosado.empty:
+        df_prod_desglosado = df_prod_desglosado.merge(df_s_min, left_on='Producto', right_on=col_cod, how='left')
+        df_prod_desglosado.rename(columns={col_tc: 'TC'}, inplace=True)
+        df_prod_desglosado['TC'].fillna(0, inplace=True)
+    
+    return agrupado, df_prod_desglosado
+
+def generar_pdf(maquinas, agrupado_eventos, df_productos):
+    pdf = ReportePDF()
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    for maquina in maquinas_seleccionadas:
+    for maq in maquinas:
         pdf.add_page()
-        
-        # Encabezado Principal
-        pdf.set_font("Arial", 'B', 18)
-        pdf.set_text_color(0, 66, 134)  # Azul FAMMA
-        pdf.cell(190, 10, f"REPORTE DE EFICIENCIA: {maquina}", ln=True)
+        pdf.set_font("Arial", 'B', 14)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 10, f"MÁQUINA: {maq}", ln=True)
         pdf.ln(5)
 
-        # --- CUADRO 1: RESUMEN GLOBAL DE LA CELDA ---
-        pdf.set_font("Arial", 'B', 11); pdf.set_text_color(0)
-        pdf.cell(190, 8, "1. Rendimiento Global por Complejidad (Prropateado)", ln=True)
-        pdf.set_fill_color(230, 230, 230); pdf.set_font("Arial", 'B', 9)
+        # --- CUADRO PRINCIPAL (MÁQUINA GLOBAL) ---
+        pdf.set_font("Arial", 'B', 10)
+        pdf.cell(0, 8, "Resumen Global por Simultaneidad", ln=True)
         
-        # Cabeceras
-        pdf.cell(50, 9, "Complejidad", border=1, fill=True, align='C')
-        pdf.cell(45, 9, "Total Tiempo (Hs)", border=1, fill=True, align='C')
-        pdf.cell(45, 9, "Total Piezas (Prop.)", border=1, fill=True, align='C')
-        pdf.cell(50, 9, "Pzas/Hora Promedio", border=1, ln=True, fill=True, align='C')
-        
-        # Datos Globales
-        pdf.set_font("Arial", '', 9)
-        df_m_global = df_global[df_global['Máquina'] == maquina]
-        for _, row in df_m_global.iterrows():
-            pdf.cell(50, 8, f"{int(row['Cant_Refs'])} Ref(s) simultáneas", border=1)
-            pdf.cell(45, 8, f"{row['Tiempo_Hs']:.2f}", border=1, align='C')
-            pdf.cell(45, 8, f"{int(row['Piezas'])}", border=1, align='C')
-            cad = row['Piezas'] / row['Tiempo_Hs'] if row['Tiempo_Hs'] > 0 else 0
-            pdf.cell(50, 8, f"{cad:.2f}", border=1, ln=True, align='C')
-        
-        if df_m_global.empty:
-            pdf.cell(190, 8, "Sin datos de producción global.", border=1, ln=True, align='C')
+        pdf.set_font("Arial", 'B', 8)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(35, 8, "Máquina", 1, 0, 'C', True)
+        pdf.cell(35, 8, "Piezas Simultaneas", 1, 0, 'C', True)
+        pdf.cell(35, 8, "Tiempo Prod. (Hs)", 1, 0, 'C', True)
+        pdf.cell(45, 8, "Total Pzas Fabricadas", 1, 0, 'C', True)
+        pdf.cell(40, 8, "Pzas / Hora Promedio", 1, 1, 'C', True)
+
+        df_maq_global = agrupado_eventos[agrupado_eventos['Máquina'] == maq]
+        resumen_maq = df_maq_global.groupby('Cant_Simultaneas').agg({
+            'Tiempo_Hs': 'sum',
+            'Pzas_Prorrateadas': 'sum'
+        }).reset_index()
+
+        pdf.set_font("Arial", '', 8)
+        for i in range(1, 5):
+            row = resumen_maq[resumen_maq['Cant_Simultaneas'] == i]
+            if not row.empty:
+                t_hs = row['Tiempo_Hs'].values[0]
+                p_tot = row['Pzas_Prorrateadas'].values[0]
+                ph_prom = p_tot / t_hs if t_hs > 0 else 0
+            else:
+                t_hs, p_tot, ph_prom = 0, 0, 0
+
+            pdf.cell(35, 8, maq, 1, 0, 'C')
+            pdf.cell(35, 8, str(i), 1, 0, 'C')
+            pdf.cell(35, 8, f"{t_hs:.2f}", 1, 0, 'C')
+            pdf.cell(45, 8, f"{int(p_tot)}", 1, 0, 'C')
+            pdf.cell(40, 8, f"{ph_prom:.2f}", 1, 1, 'C')
+
         pdf.ln(10)
 
-        # --- CUADRO 2: DETALLE POR PIEZA Y CONTEXTO ---
-        pdf.set_font("Arial", 'B', 11); pdf.cell(190, 8, "2. Detalle de Eficiencia por Referencia y Contexto", ln=True)
-        pdf.set_fill_color(0, 66, 134); pdf.set_text_color(255, 255, 255)  # Azul y Blanco
+        # --- CUADROS INDIVIDUALES POR PIEZA ---
+        pdf.set_font("Arial", 'B', 10)
+        pdf.cell(0, 8, "Detalle de Cadencia por Producto", ln=True)
         
-        # Cabeceras Complejas
-        h1 = 11  # Altura cabecera
-        pdf.set_font("Arial", 'B', 7)
-        pdf.cell(45, h1, "Producto", 1, 0, 'C', True)
-        pdf.cell(20, h1, "Simult.", 1, 0, 'C', True)
-        pdf.cell(30, h1, "Contexto (Hecho con...)", 1, 0, 'C', True)
-        pdf.cell(20, h1, "Tiempo (Hs P.)", 1, 0, 'C', True)
-        pdf.cell(20, h1, "Piezas (P.)", 1, 0, 'C', True)
-        pdf.cell(20, h1, "P/H Real", 1, 0, 'C', True)
-        pdf.cell(10, h1, "TC", 1, 0, 'C', True)
-        pdf.cell(15, h1, "P/H Est.", 1, 0, 'C', True)
-        pdf.cell(10, h1, "Dif.", 1, 1, 'C', True)
+        df_maq_prods = df_productos[df_productos['Máquina'] == maq] if not df_productos.empty else pd.DataFrame()
         
-        # Datos de Productos
-        pdf.set_font("Arial", '', 6.5); pdf.set_text_color(0)
-        df_m_prods = df_productos_prorrateados[df_productos_prorrateados['Máquina'] == maquina]
-        for _, row in df_m_prods.iterrows():
-            pdf.cell(45, 8, str(row['Producto'])[:30], 1)
-            pdf.cell(20, 8, f"{int(row['Cant_Refs'])}", 1, 0, 'C')
+        if not df_maq_prods.empty:
+            productos_unicos = df_maq_prods['Producto'].unique()
             
-            # Contexto truncado
-            contexto = str(row['Contexto']).replace("'","")[:20] + "..." if len(str(row['Contexto'])) > 20 else str(row['Contexto']).replace("'","")
-            pdf.cell(30, 8, contexto if contexto != '[]' else '-', 1, 0, 'C')
-            
-            pdf.cell(20, 8, f"{row['Tiempo']:.2f}", 1, 0, 'C')
-            pdf.cell(20, 8, f"{int(row['Piezas'])}", 1, 0, 'C')
-            pdf.cell(20, 8, f"{row['Cadencia_Real']:.2f}", 1, 0, 'C')
-            pdf.cell(10, 8, f"{row['TC']:.2f}", 1, 0, 'C')
-            pdf.cell(15, 8, f"{row['Pzas_Hora_Est']:.2f}", 1, 0, 'C')
-            
-            # Color de Diferencia
-            pdf.set_font("Arial", 'B', 6.5)
-            diff = row['Pzas_Hora_Est'] - row['Cadencia_Real']
-            if diff < 0: pdf.set_text_color(0, 150, 0) # Verde si es más rápido
-            elif diff > 5: pdf.set_text_color(200, 0, 0) # Rojo si es muy lento
-            pdf.cell(10, 8, f"{diff:.1f}", 1, 1, 'C')
-            pdf.set_font("Arial", '', 6.5); pdf.set_text_color(0) # Reset color
+            for prod in productos_unicos:
+                pdf.set_font("Arial", 'B', 9)
+                pdf.set_fill_color(0, 66, 134)
+                pdf.set_text_color(255, 255, 255)
+                pdf.cell(190, 8, f"PIEZA: {str(prod)[:60]}", 1, 1, 'C', True)
 
-        if df_m_prods.empty:
-            pdf.cell(190, 8, "Sin datos prorrateados por referencia.", 1, 1, 'C')
+                pdf.set_font("Arial", 'B', 7)
+                pdf.set_fill_color(240, 240, 240)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(25, 8, "Simultaneo Con", 1, 0, 'C', True)
+                pdf.cell(25, 8, "Tiempo Prod (Hs)", 1, 0, 'C', True)
+                pdf.cell(30, 8, "Pzas Fabricadas", 1, 0, 'C', True)
+                pdf.cell(25, 8, "P/H Real", 1, 0, 'C', True)
+                pdf.cell(25, 8, "Tiempo Ciclo", 1, 0, 'C', True)
+                pdf.cell(30, 8, "P/H Estimada", 1, 0, 'C', True)
+                pdf.cell(30, 8, "Diferencia", 1, 1, 'C', True)
+
+                df_p_data = df_maq_prods[df_maq_prods['Producto'] == prod]
+                resumen_prod = df_p_data.groupby('Simultaneo_Con').agg({
+                    'Tiempo_Hs': 'sum',
+                    'Pzas_Prorrateadas': 'sum',
+                    'TC': 'first'
+                }).reset_index()
+
+                pdf.set_font("Arial", '', 8)
+                for i in range(1, 5):
+                    row = resumen_prod[resumen_prod['Simultaneo_Con'] == i]
+                    if not row.empty:
+                        t_hs = row['Tiempo_Hs'].values[0]
+                        p_tot = row['Pzas_Prorrateadas'].values[0]
+                        tc = row['TC'].values[0]
+                        
+                        ph_real = p_tot / t_hs if t_hs > 0 else 0
+                        # CORRECCIÓN AQUÍ: P/H Estimada es un estándar fijo (60 / TC) y no se divide por la simultaneidad (i)
+                        ph_est = 60 / tc if tc > 0 else 0 
+                        diferencia = ph_real - ph_est
+                        
+                        pdf.cell(25, 8, str(i), 1, 0, 'C')
+                        pdf.cell(25, 8, f"{t_hs:.2f}", 1, 0, 'C')
+                        pdf.cell(30, 8, f"{int(p_tot)}", 1, 0, 'C')
+                        pdf.cell(25, 8, f"{ph_real:.2f}", 1, 0, 'C')
+                        pdf.cell(25, 8, f"{tc:.2f}", 1, 0, 'C')
+                        pdf.cell(30, 8, f"{ph_est:.2f}", 1, 0, 'C')
+                        
+                        if diferencia < 0:
+                            pdf.set_text_color(200, 0, 0)
+                        else:
+                            pdf.set_text_color(0, 150, 0)
+                            
+                        pdf.cell(30, 8, f"{diferencia:.2f}", 1, 1, 'C')
+                        pdf.set_text_color(0, 0, 0)
+        else:
+            pdf.set_font("Arial", '', 9)
+            pdf.cell(0, 8, "No hay productos registrados para esta máquina.", 0, 1)
 
     return pdf.output(dest='S').encode('latin-1', errors='ignore')
 
-# 3. INTERFAZ DE USUARIO CON STREAMLIT
-# Replicando el layout de la vista previa: minimalist, solo inputs y PDF
-st.title("📊 FAMMA | Analizador de Eficiencia Unificada Celda 15")
+# --- 4. INTERFAZ DE STREAMLIT ---
+st.title("📊 FAMMA | Calculadora de Eficiencia Unificada")
 
 u_p = st.text_input("1. Link de Datos de Producción (Google Sheets CSV):")
 u_s = st.text_input("2. Link de Tiempos de Ciclo (Google Sheets CSV):")
 
-# Ejecución principal
 if u_p and u_s:
     try:
-        # Carga de datos
-        with st.spinner("Cargando y unificando datos..."):
-            df_p_raw = pd.read_csv(get_csv_url(u_p))
-            df_s_raw = pd.read_csv(get_csv_url(u_s))
-
-            df_p = preprocesar_datos(df_p_raw)
-            df_s = preprocesar_ciclos(df_s_raw)
-
-        # 1. Cálculo del Cuadro Principal Global por Máquina
-        # Agrupar por Máquina y Complejidad (N)
-        df_global = df_p.groupby(['Máquina', 'Cant_Refs']).agg({
-            'Tiempo_Prorrateado_Hs': 'sum', 
-            'Piezas_Prorrateadas': 'sum'
-        }).reset_index().rename(columns={'Tiempo_Prorrateado_Hs': 'Tiempo_Hs', 'Piezas_Prorrateadas': 'Piezas'})
-
-        # 2. Cálculo Individual de Piezas (Prorrateo Avanzado)
-        expandido = []
-        for _, fila in df_p.iterrows():
-            cant_refs = fila['Cant_Refs']
-            prod_list = fila['Prod_List']
-            
-            for p in prod_list:
-                # El contexto son las 'otras' piezas hechas en el mismo momento
-                contexto = [other_p for other_p in prod_list if other_p != p]
-                expandido.append({
-                    'Producto': p,
-                    'Máquina': fila['Máquina'],
-                    'Cant_Refs': cant_refs,
-                    'Contexto': str(contexto),  # Como string para agrupar
-                    'Tiempo': fila['Tiempo_Prorrateado_Hs'],
-                    'Piezas': fila['Piezas_Prorrateadas']
-                })
+        with st.spinner("Procesando datos y agrupando eventos..."):
+            df_p = pd.read_csv(get_csv_url(u_p))
+            df_s = pd.read_csv(get_csv_url(u_s))
+            agrupado_eventos, df_productos = procesar_datos(df_p, df_s)
         
-        df_exp = pd.DataFrame(expandido)
-        # Agrupar para obtener cadencias reales prorrateadas por contexto
-        df_productos_prorrateados = df_exp.groupby(['Producto', 'Máquina', 'Cant_Refs', 'Contexto']).agg({
-            'Tiempo': 'sum', 
-            'Piezas': 'sum'
-        }).reset_index()
-        df_productos_prorrateados['Cadencia_Real'] = df_productos_prorrateados['Piezas'] / df_productos_prorrateados['Tiempo']
+        maquinas_disponibles = sorted(agrupado_eventos['Máquina'].unique())
+        maq_seleccionadas = st.multiselect("3. Seleccione la(s) máquina(s) a evaluar:", maquinas_disponibles, default=maquinas_disponibles)
 
-        # 3. Comparación con Estándares (Tiempo Ciclo)
-        # Integrar TC de la hoja 2
-        std_c = df_s[['Código Producto', 'Tiempo Ciclo']].copy().rename(columns={'Tiempo Ciclo': 'TC'})
-        df_productos_prorrateados = df_productos_prorrateados.merge(std_c, left_on='Producto', right_on='Código Producto', how='left').fillna(0)
-        
-        # Pzas_Hora_Est = (60 / TC) / N
-        df_productos_prorrateados['Pzas_Hora_Est'] = np.where(
-            (df_productos_prorrateados['TC'] > 0),
-            (60 / df_productos_prorrateados['TC']) / df_productos_prorrateados['Cant_Refs'],
-            0
-        )
-
-        # Selector de Máquinas (obligatorio para el reporte)
-        maqs_disp = sorted(df_productos_prorrateados['Máquina'].unique())
-        sel_maqs = st.multiselect("Seleccionar Máquinas para el Reporte:", maqs_disp, default=maqs_disp if 'Celda 15' in maqs_disp else None)
-
-        if sel_maqs:
-            # Botón de Descarga del PDF
-            pdf_bytes = generar_pdf(sel_maqs, df_global, df_productos_prorrateados)
-            
+        if maq_seleccionadas:
+            pdf_bytes = generar_pdf(maq_seleccionadas, agrupado_eventos, df_productos)
             st.download_button(
-                label="📥 DESCARGAR REPORTE PDF (Reporte_FAMMA.pdf)",
+                label="📥 DESCARGAR REPORTE DE CADENCIA (PDF)",
                 data=pdf_bytes,
-                file_name="Reporte_FAMMA.pdf",
+                file_name="Reporte_Cadencia_FAMMA.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
         else:
-            st.warning("Seleccione al menos una máquina.")
-
+            st.warning("Debe seleccionar al menos una máquina para generar el PDF.")
+            
     except Exception as e:
-        st.error(f"Error técnico procesando la base de datos: {e}")
+        st.error(f"Se encontró un error técnico al leer las hojas de cálculo: {e}")
