@@ -36,26 +36,29 @@ def procesar_datos(df_p, df_s):
     df_p.columns = [c.strip() for c in df_p.columns]
     df_s.columns = [c.strip() for c in df_s.columns]
 
-    # 1. Limpieza y Unificación Celda 15
+    # 1. Unificación Celda 15
     if 'Máquina' in df_p.columns:
         df_p['Máquina'] = df_p['Máquina'].astype(str).replace(r'(?i).*15.*', 'Celda 15', regex=True)
     
-    # 2. Filtrar solo filas donde realmente hubo un evento de Producción (Columna K / Nivel 1)
+    # Filtrar solo Nivel 1 = Producción
     col_nivel_1 = 'Nivel 1' if 'Nivel 1' in df_p.columns else df_p.columns[10]
     df_p[col_nivel_1] = df_p[col_nivel_1].fillna('')
     df_p = df_p[df_p[col_nivel_1].astype(str).str.contains('(?i)producci')]
 
-    # Limpiar columnas numéricas
+    # Limpiar numéricos
     df_p['Tiempo (Min)'] = pd.to_numeric(df_p['Tiempo (Min)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
     df_p['Buenas'] = pd.to_numeric(df_p['Buenas'], errors='coerce').fillna(0)
     df_p['No Buenas'] = pd.to_numeric(df_p['No Buenas'], errors='coerce').fillna(0)
     
-    # 3. Detectar eventos paralelos uniendo fechas
-    df_p['Fecha Inicio'] = df_p['Fecha Inicio'].fillna('Sin_Fecha_I')
-    df_p['Fecha Fin'] = df_p['Fecha Fin'].fillna('Sin_Fecha_F')
-    df_p['ID_Evento_Tiempo'] = df_p['Fecha Inicio'].astype(str) + " | " + df_p['Fecha Fin'].astype(str)
-
-    def extraer_productos(grupo):
+    # 2. DEFINICIÓN DEL EVENTO (Máquina + Rango de Tiempo Exacto)
+    df_p['Fecha Inicio'] = df_p['Fecha Inicio'].fillna('Sin_Fecha_I').astype(str)
+    df_p['Fecha Fin'] = df_p['Fecha Fin'].fillna('Sin_Fecha_F').astype(str)
+    
+    def procesar_evento(grupo):
+        # Al ocurrir en el mismo momento, el tiempo real transcurrido de la máquina es el máximo del bloque
+        tiempo_evento_hs = grupo['Tiempo (Min)'].max() / 60.0
+        pzas_totales = grupo['Buenas'].sum() + grupo['No Buenas'].sum()
+        
         prods = []
         for _, row in grupo.iterrows():
             for col in ['Producto 1', 'Producto 2']:
@@ -63,50 +66,52 @@ def procesar_datos(df_p, df_s):
                     val = str(row[col]).strip()
                     if val.lower() not in ['', 'nan', 'none']:
                         prods.append(val)
-        return list(set(prods))[:4] # Detecta hasta 4 productos únicos corriendo a la vez
+                        
+        productos_unicos = list(set(prods)) # Detecta hasta 4 productos si 15A y 15B operan juntas
+        
+        return pd.Series({
+            'Tiempo_Hs': tiempo_evento_hs,
+            'Total_Pzas': pzas_totales,
+            'Productos': productos_unicos
+        })
 
-    # 4. Agrupar EVENTOS INDIVIDUALES según el horario y máquina
-    agrupado = df_p.groupby(['Máquina', 'ID_Evento_Tiempo']).apply(lambda g: pd.Series({
-        'Tiempo_Hs': g['Tiempo (Min)'].max() / 60.0, # Usa max() para no duplicar horas si A y B corren simultáneo
-        'Total_Pzas_Fisicas': g['Buenas'].sum() + g['No Buenas'].sum(),
-        'Productos': extraer_productos(g)
-    })).reset_index()
+    # Agrupamos las filas que pertenecen exactamente al mismo evento
+    df_eventos = df_p.groupby(['Máquina', 'Fecha Inicio', 'Fecha Fin']).apply(procesar_evento).reset_index()
+    df_eventos = df_eventos[(df_eventos['Tiempo_Hs'] > 0) | (df_eventos['Total_Pzas'] > 0)]
 
-    agrupado = agrupado[(agrupado['Tiempo_Hs'] > 0) | (agrupado['Total_Pzas_Fisicas'] > 0)]
+    # 3. Simultaneidad y Prorrateo del Evento
+    df_eventos['Simultaneidad_N'] = df_eventos['Productos'].apply(lambda x: len(x) if len(x) > 0 else 1)
+    df_eventos['Pzas_Prorrateadas'] = df_eventos['Total_Pzas'] / df_eventos['Simultaneidad_N']
 
-    # 5. Cálculos de Simultaneidad y Prorrateo REAL por evento
-    agrupado['Cant_Simultaneas'] = agrupado['Productos'].apply(lambda x: len(x) if len(x) > 0 else 1)
-    agrupado['Pzas_Prorrateadas'] = agrupado['Total_Pzas_Fisicas'] / agrupado['Cant_Simultaneas']
-
-    # 6. Desglosar datos para tabla individual
-    registros_productos = []
-    for _, fila in agrupado.iterrows():
-        cant = fila['Cant_Simultaneas']
-        for prod in fila['Productos']:
-            registros_productos.append({
-                'Máquina': fila['Máquina'],
+    # 4. Desglosar para cálculos individuales de cada producto
+    registros = []
+    for _, evento in df_eventos.iterrows():
+        n = evento['Simultaneidad_N']
+        for prod in evento['Productos']:
+            registros.append({
+                'Máquina': evento['Máquina'],
                 'Producto': prod,
-                'Simultaneo_Con': cant,
-                'Tiempo_Hs': fila['Tiempo_Hs'],
-                'Pzas_Prorrateadas': fila['Pzas_Prorrateadas']
+                'Simultaneo_Con': n,
+                'Tiempo_Hs': evento['Tiempo_Hs'],
+                'Pzas_Prorrateadas': evento['Pzas_Prorrateadas']
             })
     
-    df_prod_desglosado = pd.DataFrame(registros_productos)
+    df_productos_desglosado = pd.DataFrame(registros)
 
-    # 7. Integrar Tiempos de Ciclo
+    # 5. Cruzar con Estándares (Tiempos de Ciclo)
     col_tc = 'Tiempo Ciclo' if 'Tiempo Ciclo' in df_s.columns else df_s.columns[2]
     col_cod = 'Código Producto' if 'Código Producto' in df_s.columns else df_s.columns[0]
     df_s[col_tc] = pd.to_numeric(df_s[col_tc].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
     df_s_min = df_s[[col_cod, col_tc]].drop_duplicates()
 
-    if not df_prod_desglosado.empty:
-        df_prod_desglosado = df_prod_desglosado.merge(df_s_min, left_on='Producto', right_on=col_cod, how='left')
-        df_prod_desglosado.rename(columns={col_tc: 'TC'}, inplace=True)
-        df_prod_desglosado['TC'].fillna(0, inplace=True)
+    if not df_productos_desglosado.empty:
+        df_productos_desglosado = df_productos_desglosado.merge(df_s_min, left_on='Producto', right_on=col_cod, how='left')
+        df_productos_desglosado.rename(columns={col_tc: 'TC'}, inplace=True)
+        df_productos_desglosado['TC'].fillna(0, inplace=True)
     
-    return agrupado, df_prod_desglosado
+    return df_eventos, df_productos_desglosado
 
-def generar_pdf(maquinas, agrupado_eventos, df_productos):
+def generar_pdf(maquinas, df_eventos, df_productos):
     pdf = ReportePDF()
     pdf.set_auto_page_break(auto=True, margin=15)
 
@@ -117,7 +122,7 @@ def generar_pdf(maquinas, agrupado_eventos, df_productos):
         pdf.cell(0, 10, f"MÁQUINA: {maq}", ln=True)
         pdf.ln(5)
 
-        # --- CUADRO PRINCIPAL (MÁQUINA GLOBAL) ---
+        # --- CUADRO PRINCIPAL (MÁQUINA GLOBAL DINÁMICA) ---
         pdf.set_font("Arial", 'B', 10)
         pdf.cell(0, 8, "Resumen Global por Simultaneidad", ln=True)
         
@@ -129,43 +134,48 @@ def generar_pdf(maquinas, agrupado_eventos, df_productos):
         pdf.cell(45, 8, "Total Pzas Fabricadas", 1, 0, 'C', True)
         pdf.cell(40, 8, "Pzas / Hora Promedio", 1, 1, 'C', True)
 
-        df_maq_global = agrupado_eventos[agrupado_eventos['Máquina'] == maq]
-        resumen_maq = df_maq_global.groupby('Cant_Simultaneas').agg({
+        df_maq_eventos = df_eventos[df_eventos['Máquina'] == maq]
+        
+        # Agrupamos sumando todos los tiempos y piezas de los eventos que compartan el mismo N
+        resumen_maq = df_maq_eventos.groupby('Simultaneidad_N').agg({
             'Tiempo_Hs': 'sum',
             'Pzas_Prorrateadas': 'sum'
         }).reset_index()
 
         pdf.set_font("Arial", '', 8)
         
-        # OBLIGAMOS a que siempre aparezcan las líneas 1, 2, 3 y 4 en el cuadro principal
-        for i in range(1, 5):
-            row = resumen_maq[resumen_maq['Cant_Simultaneas'] == i]
-            if not row.empty:
-                t_hs = row['Tiempo_Hs'].values[0]
-                p_tot = row['Pzas_Prorrateadas'].values[0]
-                ph_prom = p_tot / t_hs if t_hs > 0 else 0
-            else:
-                t_hs, p_tot, ph_prom = 0, 0, 0
-
-            pdf.cell(35, 8, maq, 1, 0, 'C')
-            pdf.cell(35, 8, str(i), 1, 0, 'C')
-            pdf.cell(35, 8, f"{t_hs:.2f}", 1, 0, 'C')
-            pdf.cell(45, 8, f"{int(p_tot)}", 1, 0, 'C')
-            pdf.cell(40, 8, f"{ph_prom:.2f}", 1, 1, 'C')
+        # Listamos los casos que realmente ocurrieron
+        if not resumen_maq.empty:
+            for _, row in resumen_maq.iterrows():
+                n = row['Simultaneidad_N']
+                t_hs = row['Tiempo_Hs']
+                p_tot = row['Pzas_Prorrateadas']
+                
+                if t_hs > 0 or p_tot > 0:
+                    ph_prom = p_tot / t_hs if t_hs > 0 else 0
+                    pdf.cell(35, 8, maq, 1, 0, 'C')
+                    pdf.cell(35, 8, str(int(n)), 1, 0, 'C')
+                    pdf.cell(35, 8, f"{t_hs:.2f}", 1, 0, 'C')
+                    pdf.cell(45, 8, f"{int(p_tot)}", 1, 0, 'C')
+                    pdf.cell(40, 8, f"{ph_prom:.2f}", 1, 1, 'C')
+        else:
+            pdf.cell(190, 8, "Sin registros de produccion", 1, 1, 'C')
 
         pdf.ln(10)
 
-        # --- CUADROS INDIVIDUALES POR PIEZA ---
+        # --- CUADROS INDIVIDUALES POR PIEZA (DINÁMICOS) ---
         pdf.set_font("Arial", 'B', 10)
         pdf.cell(0, 8, "Detalle de Cadencia por Producto", ln=True)
         
         df_maq_prods = df_productos[df_productos['Máquina'] == maq] if not df_productos.empty else pd.DataFrame()
         
         if not df_maq_prods.empty:
-            productos_unicos = df_maq_prods['Producto'].unique()
+            productos_unicos = sorted(df_maq_prods['Producto'].unique())
             
             for prod in productos_unicos:
                 df_p_data = df_maq_prods[df_maq_prods['Producto'] == prod]
+                
+                # Agrupamos los eventos de ESTA pieza sumando sus tiempos y piezas reales
                 resumen_prod = df_p_data.groupby('Simultaneo_Con').agg({
                     'Tiempo_Hs': 'sum',
                     'Pzas_Prorrateadas': 'sum',
@@ -193,21 +203,19 @@ def generar_pdf(maquinas, agrupado_eventos, df_productos):
 
                 pdf.set_font("Arial", '', 8)
                 
-                # Muestra únicamente los escenarios (1, 2, 3 o 4) en los que esta pieza REAMENTE se fabricó
-                casos_existentes_prod = sorted(resumen_prod['Simultaneo_Con'].unique())
-                
-                for i in casos_existentes_prod:
-                    row = resumen_prod[resumen_prod['Simultaneo_Con'] == i]
-                    t_hs = row['Tiempo_Hs'].values[0]
-                    p_tot = row['Pzas_Prorrateadas'].values[0]
+                # Iteramos sobre los casos de simultaneidad detectados para esta pieza
+                for _, row in resumen_prod.iterrows():
+                    n = row['Simultaneo_Con']
+                    t_hs = row['Tiempo_Hs']
+                    p_tot = row['Pzas_Prorrateadas']
                     
                     if t_hs > 0 or p_tot > 0:
-                        tc = row['TC'].values[0]
+                        tc = row['TC']
                         ph_real = p_tot / t_hs if t_hs > 0 else 0
-                        ph_est = 60 / tc if tc > 0 else 0 
+                        ph_est = 60 / tc if tc > 0 else 0  # El estándar queda constante por pieza
                         diferencia = ph_real - ph_est
                         
-                        pdf.cell(25, 8, str(int(i)), 1, 0, 'C')
+                        pdf.cell(25, 8, str(int(n)), 1, 0, 'C')
                         pdf.cell(25, 8, f"{t_hs:.2f}", 1, 0, 'C')
                         pdf.cell(30, 8, f"{int(p_tot)}", 1, 0, 'C')
                         pdf.cell(25, 8, f"{ph_real:.2f}", 1, 0, 'C')
@@ -215,12 +223,12 @@ def generar_pdf(maquinas, agrupado_eventos, df_productos):
                         pdf.cell(30, 8, f"{ph_est:.2f}", 1, 0, 'C')
                         
                         if diferencia < 0:
-                            pdf.set_text_color(200, 0, 0) # Rojo si quedó por debajo del estimado
+                            pdf.set_text_color(200, 0, 0) # Rojo si está por debajo de la P/H estimada
                         else:
                             pdf.set_text_color(0, 150, 0) # Verde
                             
                         pdf.cell(30, 8, f"{diferencia:.2f}", 1, 1, 'C')
-                        pdf.set_text_color(0, 0, 0)
+                        pdf.set_text_color(0, 0, 0) # Reseteo de color
         else:
             pdf.set_font("Arial", '', 9)
             pdf.cell(0, 8, "No hay productos registrados para esta máquina.", 0, 1)
@@ -238,13 +246,13 @@ if u_p and u_s:
         with st.spinner("Procesando datos y agrupando eventos..."):
             df_p = pd.read_csv(get_csv_url(u_p))
             df_s = pd.read_csv(get_csv_url(u_s))
-            agrupado_eventos, df_productos = procesar_datos(df_p, df_s)
+            df_eventos, df_productos = procesar_datos(df_p, df_s)
         
-        maquinas_disponibles = sorted(agrupado_eventos['Máquina'].unique())
+        maquinas_disponibles = sorted(df_eventos['Máquina'].unique())
         maq_seleccionadas = st.multiselect("3. Seleccione la(s) máquina(s) a evaluar:", maquinas_disponibles, default=maquinas_disponibles)
 
         if maq_seleccionadas:
-            pdf_bytes = generar_pdf(maq_seleccionadas, agrupado_eventos, df_productos)
+            pdf_bytes = generar_pdf(maq_seleccionadas, df_eventos, df_productos)
             st.download_button(
                 label="📥 DESCARGAR REPORTE DE CADENCIA (PDF)",
                 data=pdf_bytes,
